@@ -679,27 +679,24 @@ def apply_proxy_env(env: dict[str, str], proxy: str | None) -> None:
     proxy = (proxy or "").strip()
     if not proxy:
         return
-    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+    # agy (Go) reads only the HTTP(S) pair; ALL_PROXY is set too so tools agy
+    # spawns (curl, git, pip) don't fall back to an inherited, different proxy.
+    for key in (
+        "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
+        "ALL_PROXY", "all_proxy",
+    ):
         env[key] = proxy
     # agy talks to its own local language server over loopback; that must never
     # be routed through the proxy.
-    existing = ",".join(
-        value for value in (env.get("NO_PROXY"), env.get("no_proxy")) if value
-    )
-    entries = []
-    seen = set()
-    for raw in existing.split(","):
-        entry = raw.strip()
-        normalized = entry.casefold()
-        if entry and normalized not in seen:
-            entries.append(entry)
-            seen.add(normalized)
-    for host in _LOOPBACK_HOSTS:
-        normalized = host.casefold()
-        if normalized not in seen:
-            entries.append(host)
-            seen.add(normalized)
-    env["NO_PROXY"] = env["no_proxy"] = ",".join(entries)
+    # Merge both casings: a parent may export NO_PROXY and no_proxy with
+    # different entries. Dedup case-insensitively, keeping first spelling.
+    raw = ",".join(filter(None, (env.get("NO_PROXY"), env.get("no_proxy"))))
+    entries: dict[str, str] = {}
+    for entry in (*raw.split(","), *_LOOPBACK_HOSTS):
+        entry = entry.strip()
+        if entry:
+            entries.setdefault(entry.casefold(), entry)
+    env["NO_PROXY"] = env["no_proxy"] = ",".join(entries.values())
 
 
 def build_child_env(isolated_home: Path | str) -> dict[str, str]:

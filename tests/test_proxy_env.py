@@ -19,7 +19,10 @@ if str(plugin_dir) not in sys.path:
 from process import build_child_env
 
 PROXY = "socks5h://127.0.0.1:1080"
-_PROXY_KEYS = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
+_PROXY_KEYS = (
+    "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
+    "ALL_PROXY", "all_proxy",
+)
 _LOOPBACK = ["localhost", "127.0.0.1", "::1"]
 
 
@@ -57,14 +60,18 @@ class ProxyEnvTests(unittest.TestCase):
             env = self._build(parent, tmp)
         for key in _PROXY_KEYS:
             self.assertEqual(env[key], PROXY, key)
-        self.assertNotIn("ALL_PROXY", env)
-        self.assertNotIn("all_proxy", env)
 
     def test_set_overrides_inherited_proxy(self):
-        parent = _base_env(ANTIGRAVITY_PROXY=PROXY, HTTPS_PROXY="http://inherited:3128")
+        parent = _base_env(
+            ANTIGRAVITY_PROXY=PROXY,
+            HTTPS_PROXY="http://inherited:3128",
+            ALL_PROXY="socks5://corp-proxy:1080",
+            all_proxy="socks5://corp-proxy:1080",
+        )
         with tempfile.TemporaryDirectory() as tmp:
             env = self._build(parent, tmp)
-        self.assertEqual(env["HTTPS_PROXY"], PROXY)
+        for key in _PROXY_KEYS:
+            self.assertEqual(env[key], PROXY, key)
 
     def test_no_proxy_defaults_to_loopback(self):
         parent = _base_env(ANTIGRAVITY_PROXY=PROXY)
@@ -85,6 +92,29 @@ class ProxyEnvTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             env = self._build(parent, tmp)
         self.assertEqual(env["NO_PROXY"], "corp.local,localhost,127.0.0.1,::1")
+
+    def test_both_no_proxy_casings_are_merged(self):
+        parent = _base_env(
+            ANTIGRAVITY_PROXY=PROXY,
+            NO_PROXY="corp.local",
+            no_proxy="internal.local,corp.local",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._build(parent, tmp)
+        self.assertEqual(
+            env["NO_PROXY"].split(","),
+            ["corp.local", "internal.local", *_LOOPBACK],
+        )
+        self.assertEqual(env["no_proxy"], env["NO_PROXY"])
+
+    def test_no_proxy_dedup_is_case_insensitive(self):
+        parent = _base_env(ANTIGRAVITY_PROXY=PROXY, NO_PROXY="Corp.Local,LOCALHOST")
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._build(parent, tmp)
+        self.assertEqual(
+            env["NO_PROXY"].split(","),
+            ["Corp.Local", "LOCALHOST", "127.0.0.1", "::1"],
+        )
 
     def test_no_duplicate_no_proxy_entries(self):
         parent = _base_env(
