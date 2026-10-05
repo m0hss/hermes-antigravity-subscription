@@ -683,9 +683,22 @@ def apply_proxy_env(env: dict[str, str], proxy: str | None) -> None:
         env[key] = proxy
     # agy talks to its own local language server over loopback; that must never
     # be routed through the proxy.
-    existing = env.get("NO_PROXY") or env.get("no_proxy") or ""
-    entries = [e.strip() for e in existing.split(",") if e.strip()]
-    entries += [h for h in _LOOPBACK_HOSTS if h not in entries]
+    existing = ",".join(
+        value for value in (env.get("NO_PROXY"), env.get("no_proxy")) if value
+    )
+    entries = []
+    seen = set()
+    for raw in existing.split(","):
+        entry = raw.strip()
+        normalized = entry.casefold()
+        if entry and normalized not in seen:
+            entries.append(entry)
+            seen.add(normalized)
+    for host in _LOOPBACK_HOSTS:
+        normalized = host.casefold()
+        if normalized not in seen:
+            entries.append(host)
+            seen.add(normalized)
     env["NO_PROXY"] = env["no_proxy"] = ",".join(entries)
 
 
