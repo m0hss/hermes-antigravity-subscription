@@ -671,6 +671,24 @@ def _link_macos_keychains(isolated_home: Path) -> None:
         os.symlink(real_keychains, isolated_keychains, target_is_directory=True)
 
 
+_LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
+
+
+def apply_proxy_env(env: dict[str, str], proxy: str | None) -> None:
+    """Route agy's outbound HTTP(S) through an explicit proxy. No-op when unset."""
+    proxy = (proxy or "").strip()
+    if not proxy:
+        return
+    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        env[key] = proxy
+    # agy talks to its own local language server over loopback; that must never
+    # be routed through the proxy.
+    existing = env.get("NO_PROXY") or env.get("no_proxy") or ""
+    entries = [e.strip() for e in existing.split(",") if e.strip()]
+    entries += [h for h in _LOOPBACK_HOSTS if h not in entries]
+    env["NO_PROXY"] = env["no_proxy"] = ",".join(entries)
+
+
 def build_child_env(isolated_home: Path | str) -> dict[str, str]:
     """Construct child environment isolating home and session storage on POSIX and Windows."""
     env = dict(os.environ)
@@ -691,6 +709,7 @@ def build_child_env(isolated_home: Path | str) -> dict[str, str]:
         for var in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"):
             env.pop(var, None)
 
+    apply_proxy_env(env, os.getenv("ANTIGRAVITY_PROXY"))
     return env
 
 

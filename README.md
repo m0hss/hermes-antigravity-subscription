@@ -144,6 +144,7 @@ Models that ignore the protocol attempt `agy`'s native `RunCommand`/`WriteToFile
 | `ANTIGRAVITY_ARGS` | (none) | Extra arguments to pass to the `agy` subprocess. |
 | `ANTIGRAVITY_CONFIG_DIR` | (none) | Override the config directory, bypassing keyring and token-file detection. |
 | `ANTIGRAVITY_DEBUG_PROMPT_DIR` | (none) | Directory to dump outgoing prompts sent to `agy` for offline diagnosis. |
+| `ANTIGRAVITY_PROXY` | (none) | Proxy URL (e.g. `http://127.0.0.1:8080` or `socks5h://127.0.0.1:1080`) agy's subprocess should use for outbound HTTP(S). Unset means agy inherits the parent process's proxy environment unchanged. |
 
 ---
 
