@@ -23,6 +23,8 @@ _KNOWN_EFFORTS: dict[str, tuple[str, ...]] = {
     "gemini-3.7-flash": ("low", "medium", "high"),
     "gemini-3.6-flash": ("low", "medium", "high"),
     "gemini-3.1-pro": ("low", "high"),
+    "claude-sonnet-4-6": (),
+    "claude-opus-4-6-thinking": (),
     "claude-opus-5-5": ("low", "medium", "high"),
     "claude-sonnet-5-5": ("low", "medium", "high"),
     "gpt-oss-120b": ("medium",),
@@ -38,10 +40,10 @@ _MODEL_ALIASES = {
     "pro": "gemini-3.1-pro",
     "gemini-pro": "gemini-3.1-pro",
     "gemini-3.1": "gemini-3.1-pro",
-    "sonnet": "claude-sonnet-5-5",
-    "claude-sonnet": "claude-sonnet-5-5",
-    "opus": "claude-opus-5-5",
-    "claude-opus": "claude-opus-5-5",
+    "sonnet": "claude-sonnet-4-6",
+    "claude-sonnet": "claude-sonnet-4-6",
+    "opus": "claude-opus-4-6-thinking",
+    "claude-opus": "claude-opus-4-6-thinking",
 }
 
 _EFFORT_SUFFIXES = (("-high", "high"), ("-medium", "medium"), ("-low", "low"))
@@ -185,6 +187,52 @@ def _nearest_effort(requested: str, supported: tuple[str, ...]) -> str:
     )
 
 
+def resolve_model_alias(
+    model: str, catalog: dict[str, tuple[str, ...]] | None = None
+) -> str:
+    """Resolve user alias to concrete base model, prioritizing the live agy catalog."""
+    m = (model or "gemini-3.8-flash").strip()
+    lower_m = m.lower()
+
+    if catalog:
+        # Exact match or base match already exists in catalog
+        if lower_m in catalog:
+            return lower_m
+        base, suffix = split_effort_suffix(lower_m)
+        if base in catalog:
+            return lower_m
+
+        lookup_term = "flash" if base == "default" else base
+
+        # Dynamic family matching against whatever models agy actually returned
+        family_keywords = {
+            ("sonnet", "claude-sonnet"): "sonnet",
+            ("opus", "claude-opus"): "opus",
+            ("pro", "gemini-pro", "gemini-3.1"): "pro",
+            ("flash", "gemini-flash", "gemini-3.8"): "flash",
+            ("gpt", "gpt-oss", "oss"): "gpt",
+        }
+        for triggers, kw in family_keywords.items():
+            if lookup_term in triggers:
+                matches = [k for k in catalog if kw in k.lower()]
+                if matches:
+                    # Sort descending so newer versions win if multiple exist (5-5 before 4-6, 3.8 before 3.7)
+                    best = sorted(matches, reverse=True)[0]
+                    return f"{best}-{suffix}" if suffix else best
+
+        # General substring match against catalog
+        matches = [k for k in catalog if lookup_term in k.lower()]
+        if matches:
+            best = sorted(matches, reverse=True)[0]
+            return f"{best}-{suffix}" if suffix else best
+
+    base, suffix = split_effort_suffix(lower_m)
+    fallback = _MODEL_ALIASES.get(base, base)
+    if suffix and fallback != base:
+        return f"{fallback}-{suffix}"
+    return _MODEL_ALIASES.get(lower_m, m)
+
+
 def resolve_model_and_effort(
     model: str | None,
     reasoning_effort: str | None = None,
@@ -194,11 +242,15 @@ def resolve_model_and_effort(
     Returns (model id, effort). The effort is None for models that agy selects
     by bare name; the client then omits --effort.
     """
-    m = str(model or "gemini-3.8-flash").strip()
-    m = _MODEL_ALIASES.get(m.lower(), m)
+    raw_model = str(model or "gemini-3.8-flash").strip()
+    catalog = _cached_catalog()
+    if catalog is None:
+        catalog = load_catalog(only_if_stale=True)
+
+    m = resolve_model_alias(raw_model, catalog)
 
     base_model, suffix_effort = split_effort_suffix(m)
-    supported = model_efforts(base_model)
+    supported = model_efforts(base_model, refresh=False)
     if supported is None:
         supported = _heuristic_efforts(base_model, suffix_effort is not None)
     if not supported:

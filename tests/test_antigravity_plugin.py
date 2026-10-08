@@ -645,8 +645,25 @@ class AntigravityPluginTests(unittest.TestCase):
         self.assertEqual(client._resolve_model_and_effort("claude-opus-5-5", "high"), ("claude-opus-5-5-high", "high"))
         self.assertEqual(client._resolve_model_and_effort("claude-opus-5-5", "xhigh"), ("claude-opus-5-5-high", "high"))
         self.assertEqual(client._resolve_model_and_effort("claude-opus-5-5-high", "low"), ("claude-opus-5-5-low", "low"))
-        self.assertEqual(client._resolve_model_and_effort("sonnet", "high"), ("claude-sonnet-5-5-high", "high"))
-        self.assertEqual(client._resolve_model_and_effort("opus", "medium"), ("claude-opus-5-5-medium", "medium"))
+
+        # Aliases dynamically resolve against available catalog (5.5 with effort vs 4.6 without effort)
+        catalog_5_5 = {
+            "gemini-3.8-flash": ("low", "medium", "high"),
+            "claude-sonnet-5-5": ("low", "medium", "high"),
+            "claude-opus-5-5": ("low", "medium", "high"),
+        }
+        with patch("models._catalog_cache", (time.monotonic() + 60, catalog_5_5)):
+            self.assertEqual(client._resolve_model_and_effort("sonnet", "high"), ("claude-sonnet-5-5-high", "high"))
+            self.assertEqual(client._resolve_model_and_effort("opus", "medium"), ("claude-opus-5-5-medium", "medium"))
+
+        catalog_4_6 = {
+            "gemini-3.8-flash": ("low", "medium", "high"),
+            "claude-sonnet-4-6": (),
+            "claude-opus-4-6-thinking": (),
+        }
+        with patch("models._catalog_cache", (time.monotonic() + 60, catalog_4_6)):
+            self.assertEqual(client._resolve_model_and_effort("sonnet", "high"), ("claude-sonnet-4-6", None))
+            self.assertEqual(client._resolve_model_and_effort("opus", "medium"), ("claude-opus-4-6-thinking", None))
 
         # gpt-oss-120b only exists at medium: every request maps to it.
         for requested in ("low", "medium", "high", "max"):
@@ -660,18 +677,37 @@ class AntigravityPluginTests(unittest.TestCase):
             self.assertEqual(client._resolve_model_and_effort("claude-opus-4-6-thinking", "medium"), ("claude-opus-4-6-thinking", None))
 
     def test_profile_supported_reasoning_efforts(self):
+        import models
+
         profile = get_provider_profile("antigravity-subscription-directsdk")
+        prov_models = sys.modules.get(f"{type(profile).__module__}.models", models)
         self.assertEqual(profile.supported_reasoning_efforts("gemini-3.8-flash"), ("low", "medium", "high"))
         self.assertEqual(profile.supported_reasoning_efforts("gemini-3.1-pro"), ("low", "high"))
         self.assertEqual(profile.supported_reasoning_efforts("claude-sonnet-5-5"), ("low", "medium", "high"))
         self.assertEqual(profile.supported_reasoning_efforts("claude-opus-5-5-high"), ("low", "medium", "high"))
         self.assertEqual(profile.supported_reasoning_efforts("gpt-oss-120b-medium"), ("medium",))
-        # Aliases resolve to the model they stand for.
+        # Aliases resolve to the model they stand for in the catalog.
         self.assertEqual(profile.supported_reasoning_efforts("pro"), ("low", "high"))
-        self.assertEqual(profile.supported_reasoning_efforts("sonnet"), ("low", "medium", "high"))
+        catalog_5_5 = {
+            "claude-sonnet-5-5": ("low", "medium", "high"),
+            "claude-opus-5-5": ("low", "medium", "high"),
+        }
+        with patch.object(prov_models, "_catalog_cache", (time.monotonic() + 60, catalog_5_5)), \
+             patch("models._catalog_cache", (time.monotonic() + 60, catalog_5_5)):
+            self.assertEqual(profile.supported_reasoning_efforts("sonnet"), ("low", "medium", "high"))
+            self.assertEqual(profile.supported_reasoning_efforts("opus"), ("low", "medium", "high"))
+        catalog_4_6 = {
+            "claude-sonnet-4-6": (),
+            "claude-opus-4-6-thinking": (),
+        }
+        with patch.object(prov_models, "_catalog_cache", (time.monotonic() + 60, catalog_4_6)), \
+             patch("models._catalog_cache", (time.monotonic() + 60, catalog_4_6)):
+            self.assertEqual(profile.supported_reasoning_efforts("sonnet"), ())
+            self.assertEqual(profile.supported_reasoning_efforts("opus"), ())
         # Unknown bare-name models take no --effort; offering levels would
         # break every turn. Issue #15.
-        with patch("models._catalog_cache", None):
+        with patch.object(prov_models, "_catalog_cache", None), \
+             patch("models._catalog_cache", None):
             self.assertEqual(profile.supported_reasoning_efforts("claude-sonnet-4-6"), ())
             self.assertEqual(profile.supported_reasoning_efforts("claude-opus-4-6-thinking"), ())
 

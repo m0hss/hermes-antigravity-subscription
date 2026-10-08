@@ -14,9 +14,11 @@ try:
     from .models import (
         _FALLBACK_MODELS,
         _MODEL_ALIASES,
+        _cached_catalog,
         _heuristic_efforts,
         load_catalog,
         model_efforts,
+        resolve_model_alias,
         split_effort_suffix,
     )
 except ImportError:
@@ -25,9 +27,11 @@ except ImportError:
     from models import (
         _FALLBACK_MODELS,
         _MODEL_ALIASES,
+        _cached_catalog,
         _heuristic_efforts,
         load_catalog,
         model_efforts,
+        resolve_model_alias,
         split_effort_suffix,
     )
 
@@ -53,7 +57,9 @@ class AntigravitySubscriptionDirectSDKProfile(ProviderProfile):
         Claude take low/medium/high, Gemini Pro low/high, gpt-oss medium only.
         """
         name = (model or "").strip()
-        base, suffix_effort = split_effort_suffix(_MODEL_ALIASES.get(name.lower(), name))
+        catalog = _cached_catalog()
+        resolved_name = resolve_model_alias(name, catalog)
+        base, suffix_effort = split_effort_suffix(resolved_name)
         # No process spawn here: use the cached catalog and the built-in table.
         efforts = model_efforts(base, refresh=False)
         if efforts is None:
