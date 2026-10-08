@@ -55,6 +55,22 @@ Models that ignore the protocol attempt `agy`'s native `RunCommand`/`WriteToFile
 
 ---
 
+## Environment passed to `agy`
+
+Hermes often runs with gateway and dashboard secrets in its environment (`SLACK_BOT_TOKEN`, `TELEGRAM_BOT_TOKEN`, `*_API_KEY`, ...). `agy` is a closed-source binary and does not need any of them, so by default the child environment is the parent environment **minus credential-looking variables**: names containing `TOKEN`, `SECRET`, `PASSWORD`, `API_KEY`, `ACCESS_KEY`, `PRIVATE_KEY`, `CREDENTIAL(S)`, `AUTH`, `WEBHOOK`, `DSN` or `COOKIE`, and database/broker URLs (`DATABASE_URL`, `REDIS_URL`, `MONGO_URI`, ...). `SSH_AUTH_SOCK`, proxy and certificate variables are kept.
+
+This default is a **name heuristic**: it cannot know what an arbitrarily named variable holds. For a guarantee of exactly what `agy` sees, use strict mode.
+
+| Variable | Effect |
+| :--- | :--- |
+| `ANTIGRAVITY_ENV_PASSTHROUGH` | Comma-separated names to keep even if they look like credentials. |
+| `ANTIGRAVITY_ENV_STRICT` | `1`, `true`, `yes` or `on`: pass only the baseline below plus `ANTIGRAVITY_ENV_ALLOWLIST` and `ANTIGRAVITY_ENV_PASSTHROUGH`. |
+| `ANTIGRAVITY_ENV_ALLOWLIST` | Comma-separated names to add in strict mode. |
+
+Strict baseline: `PATH`, `LANG`, `LANGUAGE`, `LC_*`, `TZ`, `TERM`, `TMPDIR`/`TEMP`/`TMP`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` (and their lowercase spellings on POSIX), `SSL_CERT_FILE`, `SSL_CERT_DIR`, `SSH_AUTH_SOCK`, `DBUS_SESSION_BUS_ADDRESS` and `XDG_RUNTIME_DIR` (Linux keyring sign-in), `SYSTEMROOT`, `WINDIR`, `COMSPEC`, `PATHEXT` (Windows), `AGY_CLI_DISABLE_AUTO_UPDATE` and `AGY_CLI_MODEL_API_MAX_RETRIES`. Names are matched case-insensitively on Windows.
+
+---
+
 ## Security Model
 
 ```

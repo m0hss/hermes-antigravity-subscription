@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -671,9 +672,74 @@ def _link_macos_keychains(isolated_home: Path) -> None:
         os.symlink(real_keychains, isolated_keychains, target_is_directory=True)
 
 
+# Names that look like credentials. Hermes itself runs with gateway and dashboard secrets in its
+# environment (SLACK_BOT_TOKEN, TELEGRAM_BOT_TOKEN, *_API_KEY, ...); agy is a closed-source binary and
+# has no use for any of them, so they are removed from the child environment by default.
+#
+# This is a NAME heuristic. It also covers names whose value is a secret by convention (webhook URLs,
+# DSNs, cookies, database and broker URLs), but it cannot know what an arbitrarily named variable
+# holds. ``ANTIGRAVITY_ENV_STRICT`` (allow-list mode) is the reliable way to guarantee what agy sees.
+_SECRET_NAME_RE = re.compile(
+    r"(^|_)(TOKENS?|SECRETS?|PASSWORD|PASSWD|PASSPHRASE|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CREDENTIALS?|AUTH|"
+    r"WEBHOOKS?|DSN|COOKIES?)($|_)"
+    r"|(^|_)(DATABASE|DB|REDIS|MONGO\w*|POSTGRES\w*|MYSQL|AMQP|BROKER|CACHE)_(URL|URI)($|_)",
+    re.IGNORECASE,
+)
+# Names that match the pattern but are not Hermes secrets and that agy or git over ssh may need.
+# (Bare SESSION is deliberately not in the pattern: DBUS_SESSION_BUS_ADDRESS is how agy reaches the
+# Linux keyring for its own sign-in.)
+_SECRET_NAME_ALLOW = frozenset({"SSH_AUTH_SOCK", "GPG_AGENT_INFO"})
+_STRICT_VALUES = frozenset({"1", "true", "yes", "on"})
+_STRICT_BASELINE = frozenset({
+    "PATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ", "TERM", "TMPDIR", "TEMP", "TMP",
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "SSH_AUTH_SOCK",
+    # Linux keyring sign-in (agy stores its session in the freedesktop Secret Service over D-Bus)
+    "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR",
+    # Windows needs these to start a process at all
+    "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT",
+    "AGY_CLI_DISABLE_AUTO_UPDATE", "AGY_CLI_MODEL_API_MAX_RETRIES",
+})
+
+
+def _norm(name: str) -> str:
+    """Environment names are case-insensitive on Windows."""
+    return name.upper() if os.name == "nt" else name
+
+
+def _env_names(var: str) -> set[str]:
+    return {_norm(n.strip()) for n in os.environ.get(var, "").split(",") if n.strip()}
+
+
+def _filtered_parent_env() -> dict[str, str]:
+    """Parent environment minus anything that looks like a credential.
+
+    ``ANTIGRAVITY_ENV_PASSTHROUGH`` (comma separated names) keeps specific variables that the
+    pattern would drop. ``ANTIGRAVITY_ENV_STRICT`` (1, true, yes or on) goes further and passes
+    only the variables named in ``ANTIGRAVITY_ENV_ALLOWLIST`` plus a minimal baseline (PATH,
+    locale, temp dirs, TERM, TZ, proxy and certificate variables, keyring and Windows basics).
+    """
+    keep = _env_names("ANTIGRAVITY_ENV_PASSTHROUGH")
+    if os.environ.get("ANTIGRAVITY_ENV_STRICT", "").strip().lower() in _STRICT_VALUES:
+        allowed = {_norm(n) for n in _STRICT_BASELINE} | _env_names("ANTIGRAVITY_ENV_ALLOWLIST") | keep
+        return {
+            k: v
+            for k, v in os.environ.items()
+            if _norm(k) in allowed or k.upper().startswith("LC_")
+        }
+    safe = {_norm(n) for n in _SECRET_NAME_ALLOW}
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if _norm(k) in keep or _norm(k) in safe or not _SECRET_NAME_RE.search(k)
+    }
+
+
 def build_child_env(isolated_home: Path | str) -> dict[str, str]:
-    """Construct child environment isolating home and session storage on POSIX and Windows."""
-    env = dict(os.environ)
+    """Construct child environment isolating home and session storage on POSIX and Windows.
+
+    Credential-looking variables from the parent (Hermes) environment are not passed to agy.
+    """
+    env = _filtered_parent_env()
     home_str = str(isolated_home)
     env["HOME"] = home_str
     # Windows: Go's os.UserHomeDir() reads USERPROFILE then HOMEDRIVE+HOMEPATH
