@@ -25,8 +25,6 @@ _KNOWN_EFFORTS: dict[str, tuple[str, ...]] = {
     "gemini-3.1-pro": ("low", "high"),
     "claude-sonnet-4-6": (),
     "claude-opus-4-6-thinking": (),
-    "claude-opus-5-5": ("low", "medium", "high"),
-    "claude-sonnet-5-5": ("low", "medium", "high"),
     "gpt-oss-120b": ("medium",),
 }
 
@@ -42,8 +40,10 @@ _MODEL_ALIASES = {
     "gemini-3.1": "gemini-3.1-pro",
     "sonnet": "claude-sonnet-4-6",
     "claude-sonnet": "claude-sonnet-4-6",
+    "claude-sonnet-5-5": "claude-sonnet-4-6",
     "opus": "claude-opus-4-6-thinking",
     "claude-opus": "claude-opus-4-6-thinking",
+    "claude-opus-5-5": "claude-opus-4-6-thinking",
 }
 
 _EFFORT_SUFFIXES = (("-high", "high"), ("-medium", "medium"), ("-low", "low"))
@@ -203,6 +203,12 @@ def resolve_model_alias(
             return lower_m
 
         lookup_term = "flash" if base == "default" else base
+
+        # Check explicit aliases first (e.g. claude-sonnet-5-5 -> claude-sonnet-4-6)
+        if lookup_term in _MODEL_ALIASES:
+            aliased = _MODEL_ALIASES[lookup_term]
+            if aliased in catalog:
+                return f"{aliased}-{suffix}" if suffix else aliased
 
         # Dynamic family matching against whatever models agy actually returned
         family_keywords = {

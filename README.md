@@ -31,13 +31,9 @@ This plugin lets Hermes use Gemini and Claude models through your existing Antig
 | `gemini-3.7-flash` | `-low`, `-medium`, `-high` | 1M tokens | 96k tokens | `low`, `medium`, `high` |
 | `gemini-3.6-flash` | `-low`, `-medium`, `-high` | 1M tokens | 96k tokens | `low`, `medium`, `high` |
 | `gemini-3.1-pro` | `-low`, `-high` | 2M tokens | 96k tokens | `low`, `high` |
-| `claude-opus-5-5` | `-low`, `-medium`, `-high` | Not measured | 96k tokens | `low`, `medium`, `high` |
-| `claude-sonnet-5-5` | `-low`, `-medium`, `-high` | Not measured | 96k tokens | `low`, `medium`, `high` |
 | `gpt-oss-120b` | `-medium` only | 128k tokens | 96k tokens | `medium` |
 | `claude-sonnet-4-6` | None | 200k tokens | 96k tokens | None (agy rejects `--effort`) |
 | `claude-opus-4-6-thinking` | None | 200k tokens | 96k tokens | None (agy rejects `--effort`) |
-
-The `claude-*-4-6` rows apply to older `agy` builds; `agy` 1.2.15 no longer lists them.
 
 **Efforts follow `agy models`.** The plugin groups the ids that `agy models` prints (`gemini-3.8-flash-low`, `-medium`, `-high`) into one model with the efforts agy accepts for it. A model that agy lists by bare name takes no `--effort`. A requested effort that the model lacks maps to the nearest supported one, the stronger on a tie (`medium` on `gemini-3.1-pro` becomes `high`). The result is cached for one hour; the table in `models.py` covers the models above when `agy models` fails. Hermes' own `xhigh` and `max` map to `high`.
 
@@ -53,8 +49,6 @@ The `claude-*-4-6` rows apply to older `agy` builds; `agy` 1.2.15 no longer list
 | `gemini-3.7-flash` | Follows | Tested with full toolset |
 | `gemini-3.6-flash` | Ignores | Goes native even with a single tool schema |
 | `gemini-3.1-pro` | Follows | Tested with full toolset |
-| `claude-opus-5-5` | Not tested | |
-| `claude-sonnet-5-5` | Not tested | |
 | `claude-opus-4-6-thinking` | Follows | Tested with full toolset |
 | `claude-sonnet-4-6` | Partial | Works with moderate toolsets (tested up to 10 tools); refuses or flips to native with large toolsets (~40 tools) |
 | `gpt-oss-120b` | Follows | Tested with full toolset |

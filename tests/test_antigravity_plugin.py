@@ -73,6 +73,9 @@ class AntigravityPluginTests(unittest.TestCase):
         self.addCleanup(patcher_token.stop)
         self.addCleanup(patcher_cmd.stop)
         self.addCleanup(patcher_keychains.stop)
+        import models
+        models._catalog_cache = None
+        self.addCleanup(lambda: setattr(models, "_catalog_cache", None))
 
     @staticmethod
     def _write_token(tmp_dir: str) -> Path:
@@ -639,12 +642,14 @@ class AntigravityPluginTests(unittest.TestCase):
         # Suffix override: model had -high but effort was set to low
         self.assertEqual(client._resolve_model_and_effort("gemini-3.8-flash-high", "low"), ("gemini-3.8-flash-low", "low"))
 
-        # Claude 5.5 is listed by agy as -low/-medium/-high and requires --effort.
-        self.assertEqual(client._resolve_model_and_effort("claude-sonnet-5-5", "low"), ("claude-sonnet-5-5-low", "low"))
-        self.assertEqual(client._resolve_model_and_effort("claude-sonnet-5-5", "medium"), ("claude-sonnet-5-5-medium", "medium"))
-        self.assertEqual(client._resolve_model_and_effort("claude-opus-5-5", "high"), ("claude-opus-5-5-high", "high"))
-        self.assertEqual(client._resolve_model_and_effort("claude-opus-5-5", "xhigh"), ("claude-opus-5-5-high", "high"))
-        self.assertEqual(client._resolve_model_and_effort("claude-opus-5-5-high", "low"), ("claude-opus-5-5-low", "low"))
+        # Claude Sonnet 4.6 and Opus 4.6 are selected by bare name, without --effort.
+        self.assertEqual(client._resolve_model_and_effort("claude-sonnet-4-6", "low"), ("claude-sonnet-4-6", None))
+        self.assertEqual(client._resolve_model_and_effort("claude-sonnet-4-6", "medium"), ("claude-sonnet-4-6", None))
+        self.assertEqual(client._resolve_model_and_effort("claude-opus-4-6-thinking", "high"), ("claude-opus-4-6-thinking", None))
+
+        # Phantom/legacy 5-5 requests alias safely to 4-6 without --effort.
+        self.assertEqual(client._resolve_model_and_effort("claude-sonnet-5-5", "low"), ("claude-sonnet-4-6", None))
+        self.assertEqual(client._resolve_model_and_effort("claude-opus-5-5", "high"), ("claude-opus-4-6-thinking", None))
 
         # Aliases dynamically resolve against available catalog (5.5 with effort vs 4.6 without effort)
         catalog_5_5 = {
@@ -683,8 +688,9 @@ class AntigravityPluginTests(unittest.TestCase):
         prov_models = sys.modules.get(f"{type(profile).__module__}.models", models)
         self.assertEqual(profile.supported_reasoning_efforts("gemini-3.8-flash"), ("low", "medium", "high"))
         self.assertEqual(profile.supported_reasoning_efforts("gemini-3.1-pro"), ("low", "high"))
-        self.assertEqual(profile.supported_reasoning_efforts("claude-sonnet-5-5"), ("low", "medium", "high"))
-        self.assertEqual(profile.supported_reasoning_efforts("claude-opus-5-5-high"), ("low", "medium", "high"))
+        self.assertEqual(profile.supported_reasoning_efforts("claude-sonnet-4-6"), ())
+        self.assertEqual(profile.supported_reasoning_efforts("claude-opus-4-6-thinking"), ())
+        self.assertEqual(profile.supported_reasoning_efforts("claude-sonnet-5-5"), ())
         self.assertEqual(profile.supported_reasoning_efforts("gpt-oss-120b-medium"), ("medium",))
         # Aliases resolve to the model they stand for in the catalog.
         self.assertEqual(profile.supported_reasoning_efforts("pro"), ("low", "high"))
