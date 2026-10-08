@@ -325,6 +325,8 @@ class AntigravityClient:
         self._worker_model: str | None = None
         self._worker_effort: str | None = None
         self._worker_history: list[dict[str, Any]] = []
+        self._worker_conversation_id: str | None = None
+        self._conversation_history: list[dict[str, Any]] = []
         # Cumulative usage snapshot of the current worker session. agy 1.2.10+
         # persistent workers report cumulative session usage, so per-turn
         # deltas need this baseline. The reference is replaced on every spawn
@@ -457,7 +459,7 @@ class AntigravityClient:
         if temp_dir.name:
             _force_rmtree(temp_dir.name)
 
-    def _terminate_worker_locked(self) -> None:
+    def _terminate_worker_locked(self, keep_conversation: bool = False) -> None:
         self._cancel_idle_timer_locked()
         if self._worker_proc is not None:
             proc = self._worker_proc
@@ -470,14 +472,33 @@ class AntigravityClient:
         # The session is gone: any later usage from it belongs to a dead
         # session, and the next spawn must start from a clean baseline.
         self._worker_usage_baseline = {}
+        if not keep_conversation:
+            self._worker_conversation_id = None
+            self._conversation_history = []
 
-    def _terminate_worker(self) -> None:
+    def _terminate_worker(self, keep_conversation: bool = False) -> None:
         with self._lock:
-            self._terminate_worker_locked()
+            self._terminate_worker_locked(keep_conversation=keep_conversation)
+
+    def _set_worker_conversation_id(self, conv_id: str) -> None:
+        with self._lock:
+            if conv_id:
+                self._worker_conversation_id = conv_id
+
+    def _purge_isolated_conversations(self) -> None:
+        """Purge isolated conversation database files on session reset or new conversation."""
+        conv_dir = self._isolated_gemini_dir / "conversations"
+        if conv_dir.is_dir():
+            for entry in conv_dir.glob("*.db*"):
+                with contextlib.suppress(OSError):
+                    if entry.is_file():
+                        entry.unlink()
 
     def _update_worker_history(self, messages: list[dict[str, Any]] | None) -> None:
         with self._lock:
-            self._worker_history = list(messages or [])
+            msg_list = list(messages or [])
+            self._worker_history = msg_list
+            self._conversation_history = msg_list
             self._arm_idle_timer_locked()
 
     def _cancel_idle_timer_locked(self) -> None:
@@ -508,11 +529,16 @@ class AntigravityClient:
                 if self._worker_proc is not proc:
                     return
                 logger.info("Terminating idle agy worker pid=%s", getattr(proc, "pid", None))
-                self._terminate_worker_locked()
+                self._terminate_worker_locked(keep_conversation=True)
         finally:
             self._worker_lock.release()
 
-    def _get_or_spawn_worker(self, model: str, effort: str | None) -> subprocess.Popen:
+    def _get_or_spawn_worker(
+        self,
+        model: str,
+        effort: str | None,
+        conversation_id: str | None = None,
+    ) -> subprocess.Popen:
         with self._lock:
             if (
                 self._worker_proc is not None
@@ -522,9 +548,11 @@ class AntigravityClient:
             ):
                 return self._worker_proc
 
-            self._terminate_worker_locked()
+            self._terminate_worker_locked(keep_conversation=bool(conversation_id))
 
             cmd_args = [self._command, "--input-format", "stream-json", *self._args]
+            if conversation_id:
+                cmd_args.extend(["--conversation", conversation_id])
             if model:
                 cmd_args.extend(["--model", model])
             if effort:
@@ -547,7 +575,7 @@ class AntigravityClient:
             self._worker_proc = proc
             self._worker_model = model
             self._worker_effort = effort
-            self._worker_history = []
+            self._worker_history = list(self._conversation_history) if conversation_id else []
             self._worker_usage_baseline = {}
             self._active_processes.add(proc)
             return proc
@@ -649,12 +677,20 @@ class AntigravityClient:
         worker_acquired = self._worker_lock.acquire(blocking=False)
         if worker_acquired:
             try:
-                proc = self._get_or_spawn_worker(resolved_model, effort)
                 with self._lock:
-                    is_continuation = _messages_match_prefix(self._worker_history, messages_list)
+                    ref_history = (
+                        self._worker_history
+                        if (self._worker_proc is not None and self._worker_proc.poll() is None)
+                        else self._conversation_history
+                    )
+                    is_continuation = _messages_match_prefix(ref_history, messages_list)
+                    conv_id_to_resume = self._worker_conversation_id if is_continuation else None
 
                 if is_continuation:
-                    delta_msgs = messages_list[len(self._worker_history):]
+                    proc = self._get_or_spawn_worker(
+                        resolved_model, effort, conversation_id=conv_id_to_resume
+                    )
+                    delta_msgs = messages_list[len(ref_history):]
                     prompt_payload = _format_delta_prompt(delta_msgs)
                     dump_prompt_debug(
                         prompt=prompt_payload,
@@ -663,9 +699,11 @@ class AntigravityClient:
                         messages=messages_list,
                     )
                 else:
-                    if self._worker_history:
-                        self._terminate_worker()
-                        proc = self._get_or_spawn_worker(resolved_model, effort)
+                    with self._lock:
+                        if self._worker_proc is not None or self._worker_conversation_id:
+                            self._terminate_worker_locked(keep_conversation=False)
+                            self._purge_isolated_conversations()
+                    proc = self._get_or_spawn_worker(resolved_model, effort, conversation_id=None)
                     prompt_payload = _format_messages_as_prompt(
                         messages_list, model=resolved_model, tools=tools, tool_choice=tool_choice
                     )
@@ -681,8 +719,10 @@ class AntigravityClient:
                     proc.stdin.write(json.dumps(event_msg) + "\n")
                     proc.stdin.flush()
                 except (BrokenPipeError, OSError):
-                    self._terminate_worker()
-                    proc = self._get_or_spawn_worker(resolved_model, effort)
+                    with self._lock:
+                        self._terminate_worker_locked(keep_conversation=False)
+                        self._purge_isolated_conversations()
+                    proc = self._get_or_spawn_worker(resolved_model, effort, conversation_id=None)
                     prompt_payload = _format_messages_as_prompt(
                         messages_list, model=resolved_model, tools=tools, tool_choice=tool_choice
                     )

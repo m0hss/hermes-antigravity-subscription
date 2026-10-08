@@ -883,9 +883,9 @@ class AntigravityPluginTests(unittest.TestCase):
 
     def test_profile_get_model_context_length(self):
         profile = get_provider_profile("antigravity-subscription-directsdk")
-        self.assertEqual(profile.get_model_context_length("gemini-3.8-flash"), 96_000)
-        self.assertEqual(profile.get_model_context_length("gemini-3.1-pro"), 96_000)
-        self.assertEqual(profile.get_model_context_length("claude-sonnet-4-6"), 96_000)
+        self.assertEqual(profile.get_model_context_length("gemini-3.8-flash"), 200_000)
+        self.assertEqual(profile.get_model_context_length("gemini-3.1-pro"), 200_000)
+        self.assertEqual(profile.get_model_context_length("claude-sonnet-4-6"), 200_000)
 
         # Test env overrides
         with patch.dict(os.environ, {"ANTIGRAVITY_CONTEXT_LENGTH": "250000"}):
@@ -1090,11 +1090,123 @@ class AntigravityPluginTests(unittest.TestCase):
             stream2 = client.chat.completions.create(model="gemini-3.8-flash", messages=msgs2, stream=True)
             list(stream2)
             self.assertEqual(len(client._worker_history), 2)
-            # Proc was not terminated between turns
-            mock_proc.terminate.assert_not_called()
+            # Verify conversation_id was captured
+            self.assertEqual(client._worker_conversation_id, "conv-worker")
 
         client.close()
         mock_proc.terminate.assert_called()
+
+    def test_worker_conversation_resumed_with_flag_after_process_death(self):
+        tmp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp_dir.cleanup)
+        client = AntigravityClient(cwd=tmp_dir.name)
+
+        def make_proc(conv_id, resp):
+            proc = MagicMock()
+            proc.poll.return_value = None
+            proc.stdin = MagicMock()
+            events = [
+                json.dumps({"event": "init", "conversation_id": conv_id}) + "\n",
+                json.dumps({"event": "result", "result": {"status": "SUCCESS", "response": resp, "usage": {}}}) + "\n",
+            ]
+            def rl():
+                yield from events
+                while True:
+                    yield ""
+            proc.stdout.readline.side_effect = rl()
+            return proc
+
+        proc1 = make_proc("conv-persistent-42", "turn 1 done")
+        proc2 = make_proc("conv-persistent-42", "turn 2 done")
+
+        worker_spawns = []
+
+        def mock_popen(cmd_args, **kwargs):
+            if "models" in cmd_args:
+                m = MagicMock()
+                m.communicate.return_value = ("Gemini 3.8 Flash (High)\n", "")
+                m.returncode = 0
+                return m
+            worker_spawns.append(list(cmd_args))
+            return proc1 if len(worker_spawns) == 1 else proc2
+
+        with patch("subprocess.Popen", side_effect=mock_popen):
+            # Turn 1
+            msgs1 = [{"role": "user", "content": "turn 1"}]
+            stream1 = client.chat.completions.create(model="gemini-3.8-flash", messages=msgs1, stream=True)
+            list(stream1)
+            self.assertEqual(client._worker_conversation_id, "conv-persistent-42")
+            # First spawn should NOT have --conversation
+            self.assertNotIn("--conversation", worker_spawns[0])
+
+            # Simulate worker process dying or reaped while keeping conversation
+            client._terminate_worker(keep_conversation=True)
+            self.assertIsNone(client._worker_proc)
+            self.assertEqual(client._worker_conversation_id, "conv-persistent-42")
+
+            # Turn 2: continuation of history
+            msgs2 = msgs1 + [{"role": "tool", "tool_call_id": "call_1", "content": "result 1"}]
+            stream2 = client.chat.completions.create(model="gemini-3.8-flash", messages=msgs2, stream=True)
+            list(stream2)
+
+            # Second spawn MUST include --conversation conv-persistent-42
+            self.assertEqual(len(worker_spawns), 2)
+            self.assertIn("--conversation", worker_spawns[1])
+            conv_idx = worker_spawns[1].index("--conversation")
+            self.assertEqual(worker_spawns[1][conv_idx + 1], "conv-persistent-42")
+
+        client.close()
+
+    def test_worker_conversation_reset_on_new_session(self):
+        tmp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp_dir.cleanup)
+        client = AntigravityClient(cwd=tmp_dir.name)
+
+        def make_proc(conv_id, resp):
+            proc = MagicMock()
+            proc.poll.return_value = None
+            proc.stdin = MagicMock()
+            events = [
+                json.dumps({"event": "init", "conversation_id": conv_id}) + "\n",
+                json.dumps({"event": "result", "result": {"status": "SUCCESS", "response": resp, "usage": {}}}) + "\n",
+            ]
+            def rl():
+                yield from events
+                while True:
+                    yield ""
+            proc.stdout.readline.side_effect = rl()
+            return proc
+
+        proc1 = make_proc("conv-alpha", "resp 1")
+        proc2 = make_proc("conv-beta", "resp 2")
+
+        worker_spawns = []
+
+        def mock_popen(cmd_args, **kwargs):
+            if "models" in cmd_args:
+                m = MagicMock()
+                m.communicate.return_value = ("Gemini 3.8 Flash (High)\n", "")
+                m.returncode = 0
+                return m
+            worker_spawns.append(list(cmd_args))
+            return proc1 if len(worker_spawns) == 1 else proc2
+
+        with patch("subprocess.Popen", side_effect=mock_popen):
+            # Session 1: Turn 1
+            msgs1 = [{"role": "user", "content": "session 1"}]
+            list(client.chat.completions.create(model="gemini-3.8-flash", messages=msgs1, stream=True))
+            self.assertEqual(client._worker_conversation_id, "conv-alpha")
+
+            # Session 2: Fresh prompt (not a continuation of msgs1, e.g. /new)
+            msgs2 = [{"role": "user", "content": "session 2 starting over"}]
+            list(client.chat.completions.create(model="gemini-3.8-flash", messages=msgs2, stream=True))
+
+            # Must NOT pass old conversation id to new session
+            self.assertEqual(len(worker_spawns), 2)
+            self.assertNotIn("--conversation", worker_spawns[1])
+            self.assertEqual(client._worker_conversation_id, "conv-beta")
+
+        client.close()
 
     @staticmethod
     def _scripted_proc(events: list[str], *, alive: bool) -> MagicMock:

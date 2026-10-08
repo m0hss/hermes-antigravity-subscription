@@ -612,6 +612,8 @@ class AntigravityStream(Iterator[Any]):
                     init_data = event.get("init", {})
                     if not self.conversation_id:
                         self.conversation_id = init_data.get("conversation_id", "")
+                    if self.conversation_id and self.is_worker and self.client and hasattr(self.client, "_set_worker_conversation_id"):
+                        self.client._set_worker_conversation_id(self.conversation_id)
 
                 elif event_type == "step_update":
                     step = event.get("step_update", {})
@@ -687,6 +689,8 @@ class AntigravityStream(Iterator[Any]):
                     res = event.get("result", {})
                     if not self.conversation_id:
                         self.conversation_id = res.get("conversation_id", "")
+                    if self.conversation_id and self.is_worker and self.client and hasattr(self.client, "_set_worker_conversation_id"):
+                        self.client._set_worker_conversation_id(self.conversation_id)
                     status = res.get("status", "")
                     if "usage" in res:
                         usage_data = res["usage"]
