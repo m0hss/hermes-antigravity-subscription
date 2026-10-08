@@ -170,6 +170,9 @@ Strict baseline: `PATH`, `LANG`, `LANGUAGE`, `LC_*`, `TZ`, `TERM`, `TMPDIR`/`TEM
 | `ANTIGRAVITY_DEBUG_PROMPT_DIR` | (none) | Directory to dump outgoing prompts sent to `agy` for offline diagnosis. |
 | `ANTIGRAVITY_WORKER_IDLE_SECONDS` | `900` | Terminate the persistent `agy` worker after this many seconds without a finished turn. The next turn starts a fresh worker with the full prompt. `0` or a negative value disables the bound. |
 | `ANTIGRAVITY_PROXY` | (none) | Proxy URL (e.g. `http://127.0.0.1:8080` or `socks5h://127.0.0.1:1080`) agy's subprocess should use. Sets `HTTP(S)_PROXY` and `ALL_PROXY` (both casings) and adds loopback to `NO_PROXY`. Unset means agy inherits the parent process's proxy environment unchanged. |
+| `ANTIGRAVITY_ENV_PASSTHROUGH` | (none) | Comma-separated variable names to preserve in the child environment even if they match secret heuristics. |
+| `ANTIGRAVITY_ENV_STRICT` | `false` | When enabled (`1`, `true`), only passes variables from `ANTIGRAVITY_ENV_ALLOWLIST` plus a minimal runtime baseline. |
+| `ANTIGRAVITY_ENV_ALLOWLIST` | (none) | Additional variables to pass through when `ANTIGRAVITY_ENV_STRICT` is active. |
 
 ---
 
