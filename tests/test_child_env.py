@@ -209,10 +209,11 @@ class ChildEnvSecretScrubbingTests(unittest.TestCase):
 
     def test_names_are_matched_case_insensitively_on_windows(self):
         env = {"Path": r"C:\Windows", "Ssh_Auth_Sock": "sock", "Slack_Bot_Token": "t", "Monkey": "m"}
+        tok = Path("/tok")
         with patch.dict(os.environ, {**env, "ANTIGRAVITY_ENV_PASSTHROUGH": "monkey"}, clear=True):
-            with patch("process.os.name", "nt"):
-                with patch("process.resolve_real_token_path", return_value=Path("/tok")):
-                    child = build_child_env(r"C:\isolated\home")
+            with patch("process.os.name", "nt"), \
+                 patch("process.resolve_real_token_path", return_value=tok):
+                child = build_child_env(r"C:\isolated\home")
         self.assertIn("Ssh_Auth_Sock", child)
         self.assertIn("Monkey", child)
         self.assertNotIn("Slack_Bot_Token", child)
