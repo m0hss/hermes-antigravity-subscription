@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 import threading
 import time
@@ -49,9 +50,8 @@ _MODEL_ALIASES = {
 _EFFORT_SUFFIXES = (("-high", "high"), ("-medium", "medium"), ("-low", "low"))
 _EFFORT_RANK = {"low": 0, "medium": 1, "high": 2}
 
-# Substrings that mark a line of `agy models` as a model id (the command also
-# prints a "Fetching available models..." header).
-_MODEL_ID_MARKERS = ("gemini", "claude", "gpt", "model")
+_SPINNER_CHARS = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+_SKIP_LINE_PREFIXES = ("error:", "usage:", "available models:", "warning:", "--")
 
 _CATALOG_TTL_SECONDS = 3600.0
 _CATALOG_FAILURE_TTL_SECONDS = 60.0
@@ -90,10 +90,13 @@ def parse_catalog(text: str) -> dict[str, tuple[str, ...]]:
     grouped: dict[str, list[str]] = {}
     for raw_line in text.splitlines():
         line = raw_line.strip()
-        if not line or "fetching" in line.lower():
+        if not line or "fetching" in line.lower() or line.startswith(_SPINNER_CHARS):
+            continue
+        lower_line = line.lower()
+        if any(lower_line.startswith(prefix) for prefix in _SKIP_LINE_PREFIXES):
             continue
         model_id = line.split()[0]
-        if not any(marker in model_id.lower() for marker in _MODEL_ID_MARKERS):
+        if not re.match(r"^[a-zA-Z0-9_\-\.]+$", model_id):
             continue
         base, effort = split_effort_suffix(model_id)
         efforts = grouped.setdefault(base, [])
@@ -204,12 +207,6 @@ def resolve_model_alias(
 
         lookup_term = "flash" if base == "default" else base
 
-        # Check explicit aliases first (e.g. claude-sonnet-5-5 -> claude-sonnet-4-6)
-        if lookup_term in _MODEL_ALIASES:
-            aliased = _MODEL_ALIASES[lookup_term]
-            if aliased in catalog:
-                return f"{aliased}-{suffix}" if suffix else aliased
-
         # Dynamic family matching against whatever models agy actually returned
         family_keywords = {
             ("sonnet", "claude-sonnet"): "sonnet",
@@ -231,6 +228,12 @@ def resolve_model_alias(
         if matches:
             best = sorted(matches, reverse=True)[0]
             return f"{best}-{suffix}" if suffix else best
+
+        # Check explicit fallback aliases if not matched dynamically in catalog
+        if lookup_term in _MODEL_ALIASES:
+            aliased = _MODEL_ALIASES[lookup_term]
+            if aliased in catalog:
+                return f"{aliased}-{suffix}" if suffix else aliased
 
     base, suffix = split_effort_suffix(lower_m)
     fallback = _MODEL_ALIASES.get(base, base)

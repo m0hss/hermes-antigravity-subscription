@@ -747,6 +747,46 @@ class AntigravityPluginTests(unittest.TestCase):
         )
         self.assertEqual(list(catalog)[0], "gemini-3.8-flash")
 
+    def test_parse_catalog_accepts_custom_and_arbitrary_models(self):
+        import models
+
+        raw_output = (
+            "⠋ Fetching available models...\n"
+            "error: ignored warning\n"
+            "deepseek-r1-high\tDeepSeek R1 (High)\n"
+            "deepseek-r1-low\tDeepSeek R1 (Low)\n"
+            "qwen-2.5-coder-32b\tQwen 2.5 Coder 32B\n"
+            "custom-finetune-medium\tCustom Fine-tune (Medium)\n"
+        )
+        catalog = models.parse_catalog(raw_output)
+        self.assertEqual(
+            catalog,
+            {
+                "deepseek-r1": ("low", "high"),
+                "qwen-2.5-coder-32b": (),
+                "custom-finetune": ("medium",),
+            },
+        )
+
+    def test_dynamic_alias_precedence_with_claude_5_5(self):
+        import models
+
+        catalog = {
+            "gemini-3.8-flash": ("low", "medium", "high"),
+            "claude-sonnet-5-5": ("low", "medium", "high"),
+            "claude-sonnet-4-6": (),
+            "claude-opus-5-5": ("low", "high"),
+        }
+        # When catalog has 5-5, alias 'sonnet' dynamically maps to newest (5-5)
+        self.assertEqual(models.resolve_model_alias("sonnet", catalog), "claude-sonnet-5-5")
+        self.assertEqual(models.resolve_model_alias("claude-sonnet", catalog), "claude-sonnet-5-5")
+        self.assertEqual(models.resolve_model_alias("claude-sonnet-5-5", catalog), "claude-sonnet-5-5")
+        self.assertEqual(models.resolve_model_alias("opus", catalog), "claude-opus-5-5")
+
+    def test_profile_fallback_models_is_empty_for_account_scoping(self):
+        profile = get_provider_profile("antigravity-subscription-directsdk")
+        self.assertEqual(profile.fallback_models, ())
+
     def test_fetch_models_lists_every_family_once(self):
         import models
 
