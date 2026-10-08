@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -692,9 +693,40 @@ class AntigravityPluginTests(unittest.TestCase):
         verdict3 = hook(RuntimeError("stream input cancelled: context canceled"))
         self.assertEqual(verdict3, {"reason": "context_overflow", "retryable": True, "should_compress": True})
 
+        # Test AI credits balance exhaustion (billing)
+        verdict_billing = hook(RuntimeError("Antigravity execution failed: Your AI credits balance is too low to continue."))
+        self.assertEqual(
+            verdict_billing,
+            {"reason": "billing", "retryable": False, "should_fallback": True, "should_compress": False},
+        )
+
+        # Test daily or billing cap (billing)
+        verdict_cap = hook(RuntimeError("Antigravity model error: daily or billing cap reached"))
+        self.assertEqual(
+            verdict_cap,
+            {"reason": "billing", "retryable": False, "should_fallback": True, "should_compress": False},
+        )
+
+        # Test account verification required (auth_permanent)
+        verdict_verify = hook(RuntimeError("Verify your account to continue: https://g.co/verify"))
+        self.assertEqual(
+            verdict_verify,
+            {"reason": "auth_permanent", "retryable": False, "should_fallback": False, "should_compress": False},
+        )
+
+        # Test terms of service appeal required (auth_permanent)
+        verdict_tos = hook(RuntimeError("Appeal a terms of service block at https://support.google.com/appeal"))
+        self.assertEqual(
+            verdict_tos,
+            {"reason": "auth_permanent", "retryable": False, "should_fallback": False, "should_compress": False},
+        )
+
         # Test unrelated error returns None
         verdict4 = hook(RuntimeError("Invalid API key or unauthorized"))
         self.assertIsNone(verdict4)
+
+        # Test unsupported_response_formats on profile
+        self.assertEqual(profile.unsupported_response_formats, ("json_schema",))
 
     def test_hermes_error_classifier_integration(self):
         try:
@@ -707,6 +739,20 @@ class AntigravityPluginTests(unittest.TestCase):
         self.assertEqual(classified.reason, FailoverReason.context_overflow)
         self.assertTrue(classified.retryable)
         self.assertTrue(classified.should_compress)
+
+        # Test billing classification via Hermes error classifier
+        err_billing = RuntimeError("Antigravity execution failed: Your AI credits balance is too low to continue.")
+        classified_billing = classify_api_error(err_billing, provider="antigravity-subscription-directsdk")
+        self.assertEqual(classified_billing.reason, FailoverReason.billing)
+        self.assertFalse(classified_billing.retryable)
+        self.assertTrue(classified_billing.should_fallback)
+
+        # Test auth_permanent classification via Hermes error classifier
+        err_auth = RuntimeError("Verify your account to continue at https://g.co/verify")
+        classified_auth = classify_api_error(err_auth, provider="antigravity-subscription-directsdk")
+        self.assertEqual(classified_auth.reason, FailoverReason.auth_permanent)
+        self.assertFalse(classified_auth.retryable)
+        self.assertFalse(classified_auth.should_fallback)
 
     def test_security_default_args_omit_dangerous_permissions(self):
         # TemporaryDirectory (not /tmp): on Windows "/tmp" resolves to a
@@ -1744,6 +1790,18 @@ class AntigravityPluginTests(unittest.TestCase):
             self.assertIn("Resets in 1h49m22s.", err)
             self.assertNotIn("retrying in", err)
 
+            # Verify AI credits balance exhaustion log line
+            log_file.write_text("E1008 06:00:00.000000 100 run.go:100] Your AI credits balance is too low to continue.\n", encoding="utf-8")
+            err_credits = _check_early_quota_error(tmp_path)
+            self.assertIsNotNone(err_credits)
+            self.assertIn("Your AI credits balance is too low to continue.", err_credits)
+
+            # Verify daily or billing cap log line
+            log_file.write_text("E1008 06:00:00.000000 100 run.go:100] Request halted: daily or billing cap reached\n", encoding="utf-8")
+            err_cap = _check_early_quota_error(tmp_path)
+            self.assertIsNotNone(err_cap)
+            self.assertIn("daily or billing cap reached", err_cap)
+
             # Check min_mtime filter: future timestamp ignores old log
             err_future = _check_early_quota_error(tmp_path, min_mtime=time.time() + 100)
             self.assertIsNone(err_future)
@@ -1790,6 +1848,32 @@ class AntigravityPluginTests(unittest.TestCase):
             self.assertIn("RESOURCE_EXHAUSTED", str(ctx.exception))
             self.assertIn("Individual quota reached", str(ctx.exception))
             mock_client._terminate_process.assert_called_with(mock_proc)
+
+    def test_worker_nonzero_exit_propagates_stderr(self):
+        mock_proc = MagicMock()
+        mock_proc.stdout.readline.return_value = ""
+        mock_proc.poll.return_value = 1
+        mock_proc._stderr_drainer = MagicMock()
+        mock_proc._stderr_drainer.get_tail.return_value = "Your AI credits balance is too low to continue."
+
+        mock_client = MagicMock()
+        mock_client._isolated_gemini_dir = None
+        mock_lock = threading.Lock()
+
+        stream = AntigravityStream(
+            proc=mock_proc,
+            client=mock_client,
+            model="gemini-3.8-flash",
+            timeout=5.0,
+            is_worker=True,
+            worker_lock=mock_lock,
+            worker_lock_held=False,
+        )
+
+        with self.assertRaises(RuntimeError) as ctx:
+            list(stream)
+
+        self.assertIn("Your AI credits balance is too low to continue.", str(ctx.exception))
 
 
 if __name__ == "__main__":

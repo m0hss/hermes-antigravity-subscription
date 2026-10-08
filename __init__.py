@@ -195,7 +195,7 @@ def _classify_antigravity_error(
     model: str | None = None,
 ) -> dict[str, Any] | None:
     """Classify agy CLI specific runtime errors so Hermes' smart failover /
-    recovery pipeline triggers auto-compression and retry instead of failing.
+    recovery pipeline triggers auto-compression, billing failover, or permanent auth abort.
     """
     err_str = f"{error} {message}".lower()
     if any(
@@ -215,6 +215,36 @@ def _classify_antigravity_error(
             "retryable": True,
             "should_compress": True,
         }
+    if any(
+        pattern in err_str
+        for pattern in (
+            "ai credits balance is too low",
+            "credits balance is too low",
+            "daily or billing cap",
+            "billing cap",
+        )
+    ):
+        return {
+            "reason": "billing",
+            "retryable": False,
+            "should_fallback": True,
+            "should_compress": False,
+        }
+    if any(
+        pattern in err_str
+        for pattern in (
+            "verify your account to continue",
+            "appeal a terms of service block",
+            "terms of service block",
+            "terms of service violation",
+        )
+    ):
+        return {
+            "reason": "auth_permanent",
+            "retryable": False,
+            "should_fallback": False,
+            "should_compress": False,
+        }
     return None
 
 
@@ -233,6 +263,7 @@ antigravity_profile = AntigravitySubscriptionDirectSDKProfile(
     default_aux_model="gemini-3.8-flash",
     fallback_models=_FALLBACK_MODELS,
     supports_vision=True,
+    unsupported_response_formats=("json_schema",),
     classify_api_error=_classify_antigravity_error,
 )
 

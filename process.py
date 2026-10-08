@@ -731,9 +731,16 @@ def _check_early_quota_error(
             content = f.read()
 
         for line in reversed(content.splitlines()):
+            lower_line = line.lower()
+            if (
+                "ai credits balance is too low" in lower_line
+                or "credits balance is too low" in lower_line
+                or "daily or billing cap" in lower_line
+            ):
+                return line.strip()
             if "RESOURCE_EXHAUSTED" in line and (
                 "Individual quota reached" in line
-                or "quota exceeded" in line.lower()
+                or "quota exceeded" in lower_line
                 or "code 429" in line
             ):
                 start = line.find("RESOURCE_EXHAUSTED")

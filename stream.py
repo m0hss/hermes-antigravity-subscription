@@ -849,7 +849,9 @@ class AntigravityStream(Iterator[Any]):
                     quota_err = _check_early_quota_error(gemini_dir, min_mtime=start_time)
                     if quota_err:
                         raise RuntimeError(f"Antigravity model error: {quota_err}")
-                    raise RuntimeError(f"Antigravity execution failed: worker process exited with return code {worker_exit}")
+                    stderr_out = self._get_stderr_tail()
+                    err_detail = error_msg or stderr_out.strip() or f"worker process exited with return code {worker_exit}"
+                    raise RuntimeError(f"Antigravity execution failed: {err_detail}")
 
                 # Positive-evidence verdict, placed AFTER the quota and
                 # exit-code checks (the more specific signals) and BEFORE the
