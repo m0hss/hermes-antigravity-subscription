@@ -206,7 +206,8 @@ class ChildEnvSecretScrubbingTests(unittest.TestCase):
             "https_proxy": "http://proxy:3128",
             "no_proxy": "localhost",
         })
-        for name in ("http_proxy", "https_proxy", "no_proxy"):
+        expected = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY") if os.name == "nt" else ("http_proxy", "https_proxy", "no_proxy")
+        for name in expected:
             self.assertIn(name, child)
 
     def test_names_are_matched_case_insensitively_on_windows(self):
