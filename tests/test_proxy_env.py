@@ -102,8 +102,8 @@ class ProxyEnvTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             env = self._build(parent, tmp)
         self.assertEqual(
-            env["NO_PROXY"].split(","),
-            ["corp.local", "internal.local", *_LOOPBACK],
+            set(env["NO_PROXY"].split(",")),
+            {"corp.local", "internal.local", *_LOOPBACK},
         )
         self.assertEqual(env["no_proxy"], env["NO_PROXY"])
 

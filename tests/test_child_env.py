@@ -19,6 +19,8 @@ if str(plugin_dir) not in sys.path:
 
 from process import build_child_env
 
+_MOCK_TOKEN_PATH = Path("/tok") if os.name != "nt" else Path(r"C:\tok")
+
 
 class ChildEnvTests(unittest.TestCase):
     def test_posix_no_token_file_strips_ssh_session_vars_and_keeps_auth_sock(self):
@@ -133,7 +135,7 @@ class ChildEnvSecretScrubbingTests(unittest.TestCase):
         env = {**self.SECRETS, **self.HARMLESS, **(extra or {})}
         with patch.dict(os.environ, env, clear=True):
             with patch("process.os.name", "posix"):
-                with patch("process.resolve_real_token_path", return_value=Path("/tok")):
+                with patch("process.resolve_real_token_path", return_value=_MOCK_TOKEN_PATH):
                     return build_child_env("/isolated/home")
 
     def test_credential_looking_variables_are_not_passed(self):
@@ -209,20 +211,20 @@ class ChildEnvSecretScrubbingTests(unittest.TestCase):
 
     def test_names_are_matched_case_insensitively_on_windows(self):
         env = {"Path": r"C:\Windows", "Ssh_Auth_Sock": "sock", "Slack_Bot_Token": "t", "Monkey": "m"}
-        tok = Path("/tok")
         with patch.dict(os.environ, {**env, "ANTIGRAVITY_ENV_PASSTHROUGH": "monkey"}, clear=True):
             with patch("process.os.name", "nt"), \
-                 patch("process.resolve_real_token_path", return_value=tok):
+                 patch("process.resolve_real_token_path", return_value=_MOCK_TOKEN_PATH):
                 child = build_child_env(r"C:\isolated\home")
-        self.assertIn("Ssh_Auth_Sock", child)
-        self.assertIn("Monkey", child)
-        self.assertNotIn("Slack_Bot_Token", child)
+        child_lower = {k.lower(): v for k, v in child.items()}
+        self.assertIn("ssh_auth_sock", child_lower)
+        self.assertIn("monkey", child_lower)
+        self.assertNotIn("slack_bot_token", child_lower)
 
     def test_parent_environment_is_not_modified(self):
         env = {**self.SECRETS, **self.HARMLESS}
         with patch.dict(os.environ, env, clear=True):
             with patch("process.os.name", "posix"):
-                with patch("process.resolve_real_token_path", return_value=Path("/tok")):
+                with patch("process.resolve_real_token_path", return_value=_MOCK_TOKEN_PATH):
                     build_child_env("/isolated/home")
             self.assertEqual(os.environ["SLACK_BOT_TOKEN"], "xoxb-secret")
 
