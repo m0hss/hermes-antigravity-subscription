@@ -88,6 +88,25 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT_SECONDS = 300.0
 
+# The persistent worker is only ever replaced by the next request (model
+# change, non-continuation history) or by close(). Hermes retires an evicted
+# agent's client without calling close(), so without an idle bound a finished
+# conversation leaves its agy process (~200 MB RSS) running for the lifetime
+# of the gateway. Terminating an idle worker is safe: it clears the recorded
+# history, so the next turn takes the full-prompt branch on a fresh worker.
+# ANTIGRAVITY_WORKER_IDLE_SECONDS overrides the bound; 0 or less disables it.
+_DEFAULT_WORKER_IDLE_SECONDS = 900.0
+
+
+def _worker_idle_seconds() -> float:
+    raw = os.environ.get("ANTIGRAVITY_WORKER_IDLE_SECONDS", "").strip()
+    if not raw:
+        return _DEFAULT_WORKER_IDLE_SECONDS
+    try:
+        return float(raw)
+    except ValueError:
+        return _DEFAULT_WORKER_IDLE_SECONDS
+
 # Issue #4 (Windows, WinError 32): terminating agy's process tree
 # (taskkill /F /T) is asynchronous, so a child -- or a grandchild -- can
 # still hold conversations/*.db for a short moment after termination
@@ -308,6 +327,7 @@ class AntigravityClient:
         # session cannot corrupt a later session's baseline.
         self._worker_usage_baseline: dict[str, int] = {}
         self._worker_lock = threading.Lock()
+        self._worker_idle_timer: threading.Timer | None = None
 
     @staticmethod
     def _resolve_real_token_path() -> Path | None:
@@ -431,6 +451,7 @@ class AntigravityClient:
             _force_rmtree(temp_dir.name)
 
     def _terminate_worker_locked(self) -> None:
+        self._cancel_idle_timer_locked()
         if self._worker_proc is not None:
             proc = self._worker_proc
             self._worker_proc = None
@@ -450,6 +471,39 @@ class AntigravityClient:
     def _update_worker_history(self, messages: list[dict[str, Any]] | None) -> None:
         with self._lock:
             self._worker_history = list(messages or [])
+            self._arm_idle_timer_locked()
+
+    def _cancel_idle_timer_locked(self) -> None:
+        timer = self._worker_idle_timer
+        self._worker_idle_timer = None
+        if timer is not None:
+            timer.cancel()
+
+    def _arm_idle_timer_locked(self) -> None:
+        """(Re)start the idle countdown; called when a worker turn finishes."""
+        self._cancel_idle_timer_locked()
+        proc = self._worker_proc
+        idle_seconds = _worker_idle_seconds()
+        if proc is None or self.is_closed or idle_seconds <= 0:
+            return
+        timer = threading.Timer(idle_seconds, self._reap_idle_worker, args=(proc,))
+        timer.daemon = True
+        self._worker_idle_timer = timer
+        timer.start()
+
+    def _reap_idle_worker(self, proc: subprocess.Popen) -> None:
+        # A held worker lock means a turn is running on the worker; that turn
+        # re-arms the countdown when it finishes, so there is nothing to do.
+        if not self._worker_lock.acquire(blocking=False):
+            return
+        try:
+            with self._lock:
+                if self._worker_proc is not proc:
+                    return
+                logger.info("Terminating idle agy worker pid=%s", getattr(proc, "pid", None))
+                self._terminate_worker_locked()
+        finally:
+            self._worker_lock.release()
 
     def _get_or_spawn_worker(self, model: str, effort: str | None) -> subprocess.Popen:
         with self._lock:

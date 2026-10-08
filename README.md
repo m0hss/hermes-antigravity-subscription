@@ -160,6 +160,7 @@ Strict baseline: `PATH`, `LANG`, `LANGUAGE`, `LC_*`, `TZ`, `TERM`, `TMPDIR`/`TEM
 | `ANTIGRAVITY_ARGS` | (none) | Extra arguments to pass to the `agy` subprocess. |
 | `ANTIGRAVITY_CONFIG_DIR` | (none) | Override the config directory, bypassing keyring and token-file detection. |
 | `ANTIGRAVITY_DEBUG_PROMPT_DIR` | (none) | Directory to dump outgoing prompts sent to `agy` for offline diagnosis. |
+| `ANTIGRAVITY_WORKER_IDLE_SECONDS` | `900` | Terminate the persistent `agy` worker after this many seconds without a finished turn. The next turn starts a fresh worker with the full prompt. `0` or a negative value disables the bound. |
 
 ---
 
