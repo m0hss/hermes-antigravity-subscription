@@ -27,21 +27,21 @@ This plugin lets Hermes use Gemini and Claude models through your existing Antig
 
 | Model | Suffix | LLM Context | Plugin Declared | Supported Efforts |
 | :--- | :--- | :--- | :--- | :--- |
-| `gemini-3.8-flash` | `-low`, `-medium`, `-high` | 1M tokens | 200k tokens | `low`, `medium`, `high` |
-| `gemini-3.7-flash` | `-low`, `-medium`, `-high` | 1M tokens | 200k tokens | `low`, `medium`, `high` |
-| `gemini-3.6-flash` | `-low`, `-medium`, `-high` | 1M tokens | 200k tokens | `low`, `medium`, `high` |
-| `gemini-3.1-pro` | `-low`, `-high` | 2M tokens | 200k tokens | `low`, `high` |
-| `claude-opus-5-5` | `-low`, `-medium`, `-high` | Not measured | 200k tokens | `low`, `medium`, `high` |
-| `claude-sonnet-5-5` | `-low`, `-medium`, `-high` | Not measured | 200k tokens | `low`, `medium`, `high` |
-| `gpt-oss-120b` | `-medium` only | 128k tokens | 200k tokens | `medium` |
-| `claude-sonnet-4-6` | None | 200k tokens | 200k tokens | None (agy rejects `--effort`) |
-| `claude-opus-4-6-thinking` | None | 200k tokens | 200k tokens | None (agy rejects `--effort`) |
+| `gemini-3.8-flash` | `-low`, `-medium`, `-high` | 1M tokens | 96k tokens | `low`, `medium`, `high` |
+| `gemini-3.7-flash` | `-low`, `-medium`, `-high` | 1M tokens | 96k tokens | `low`, `medium`, `high` |
+| `gemini-3.6-flash` | `-low`, `-medium`, `-high` | 1M tokens | 96k tokens | `low`, `medium`, `high` |
+| `gemini-3.1-pro` | `-low`, `-high` | 2M tokens | 96k tokens | `low`, `high` |
+| `claude-opus-5-5` | `-low`, `-medium`, `-high` | Not measured | 96k tokens | `low`, `medium`, `high` |
+| `claude-sonnet-5-5` | `-low`, `-medium`, `-high` | Not measured | 96k tokens | `low`, `medium`, `high` |
+| `gpt-oss-120b` | `-medium` only | 128k tokens | 96k tokens | `medium` |
+| `claude-sonnet-4-6` | None | 200k tokens | 96k tokens | None (agy rejects `--effort`) |
+| `claude-opus-4-6-thinking` | None | 200k tokens | 96k tokens | None (agy rejects `--effort`) |
 
 The `claude-*-4-6` rows apply to older `agy` builds; `agy` 1.2.15 no longer lists them.
 
 **Efforts follow `agy models`.** The plugin groups the ids that `agy models` prints (`gemini-3.8-flash-low`, `-medium`, `-high`) into one model with the efforts agy accepts for it. A model that agy lists by bare name takes no `--effort`. A requested effort that the model lacks maps to the nearest supported one, the stronger on a tie (`medium` on `gemini-3.1-pro` becomes `high`). The result is cached for one hour; the table in `models.py` covers the models above when `agy models` fails. Hermes' own `xhigh` and `max` map to `high`.
 
-> **LLM Context vs Plugin Declared**: The LLM context column shows the model's native token window. The plugin declares 200,000 tokens to Hermes (configurable via `ANTIGRAVITY_CONTEXT_LENGTH`). This gap exists because `agy` runs an internal Go language server (`jetski/cortex`) that re-serializes the cumulative trajectory on each token via a gRPC channel with a 5-second drain deadline. Prompts exceeding 500 KB cause channel backpressure that trips the deadline and drops the stream. The 200k declared limit triggers Hermes auto-compression at 80% (160k tokens), keeping wire payloads within `agy` throughput limits.
+> **LLM Context vs Plugin Declared**: The LLM context column shows the model's native token window. The plugin declares 96,000 tokens to Hermes (configurable via `HERMES_ANTIGRAVITY_CONTEXT_LENGTH` or `ANTIGRAVITY_CONTEXT_LENGTH`). This gap exists because `agy` compiles an internal trajectory ceiling (`max_trajectory_tokens: 100000`) into its Go binary. When prompts exceed ~85k-95k tokens, `agy`'s internal trimmer silently drops earlier conversation turns down to 60k-85k tokens, or fails with stream cancellation under gRPC channel backpressure. Declaring 96k tokens ensures Hermes preflight compaction triggers at ~76.8k tokens (at 80% threshold) or 48k tokens (at 50% default threshold), safely compacting context before `agy` can truncate history or fail.
 
 ### Model Compatibility
 
@@ -163,7 +163,7 @@ Strict baseline: `PATH`, `LANG`, `LANGUAGE`, `LC_*`, `TZ`, `TERM`, `TMPDIR`/`TEM
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `ANTIGRAVITY_CONTEXT_LENGTH` | `200000` | Override the declared context window (tokens). Hermes triggers auto-compression at 80% of this value. |
+| `HERMES_ANTIGRAVITY_CONTEXT_LENGTH` | `96000` | Override the declared context window (tokens). Also checks `ANTIGRAVITY_CONTEXT_LENGTH`. Hermes triggers auto-compression based on this value (e.g. at 80% threshold, ~76.8k tokens; at 50% threshold, 48k tokens). |
 | `ANTIGRAVITY_COMMAND` | `agy` | Path to the `agy` binary. Also checks `AGY_CLI_PATH` and `ANTIGRAVITY_CLI_PATH`. |
 | `ANTIGRAVITY_ARGS` | (none) | Extra arguments to pass to the `agy` subprocess. |
 | `ANTIGRAVITY_CONFIG_DIR` | (none) | Override the config directory, bypassing keyring and token-file detection. |

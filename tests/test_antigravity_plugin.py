@@ -837,13 +837,23 @@ class AntigravityPluginTests(unittest.TestCase):
 
     def test_profile_get_model_context_length(self):
         profile = get_provider_profile("antigravity-subscription-directsdk")
-        self.assertEqual(profile.get_model_context_length("gemini-3.8-flash"), 200_000)
-        self.assertEqual(profile.get_model_context_length("gemini-3.1-pro"), 200_000)
-        self.assertEqual(profile.get_model_context_length("claude-sonnet-4-6"), 200_000)
+        self.assertEqual(profile.get_model_context_length("gemini-3.8-flash"), 96_000)
+        self.assertEqual(profile.get_model_context_length("gemini-3.1-pro"), 96_000)
+        self.assertEqual(profile.get_model_context_length("claude-sonnet-4-6"), 96_000)
 
-        # Test env override
+        # Test env overrides
         with patch.dict(os.environ, {"ANTIGRAVITY_CONTEXT_LENGTH": "250000"}):
             self.assertEqual(profile.get_model_context_length("gemini-3.8-flash"), 250_000)
+
+        with patch.dict(os.environ, {"HERMES_ANTIGRAVITY_CONTEXT_LENGTH": "120000"}):
+            self.assertEqual(profile.get_model_context_length("gemini-3.8-flash"), 120_000)
+
+        # HERMES_ takes precedence over ANTIGRAVITY_
+        with patch.dict(os.environ, {
+            "HERMES_ANTIGRAVITY_CONTEXT_LENGTH": "110000",
+            "ANTIGRAVITY_CONTEXT_LENGTH": "90000",
+        }):
+            self.assertEqual(profile.get_model_context_length("gemini-3.8-flash"), 110_000)
 
     def test_profile_classify_api_error(self):
         profile = get_provider_profile("antigravity-subscription-directsdk")
