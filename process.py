@@ -692,7 +692,9 @@ _SECRET_NAME_ALLOW = frozenset({"SSH_AUTH_SOCK", "GPG_AGENT_INFO"})
 _STRICT_VALUES = frozenset({"1", "true", "yes", "on"})
 _STRICT_BASELINE = frozenset({
     "PATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ", "TERM", "TMPDIR", "TEMP", "TMP",
-    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "SSH_AUTH_SOCK",
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "SSH_AUTH_SOCK",
     # Linux keyring sign-in (agy stores its session in the freedesktop Secret Service over D-Bus)
     "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR",
     # Windows needs these to start a process at all
@@ -734,6 +736,34 @@ def _filtered_parent_env() -> dict[str, str]:
     }
 
 
+_LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
+
+
+def apply_proxy_env(env: dict[str, str], proxy: str | None) -> None:
+    """Route agy's outbound HTTP(S) through an explicit proxy. No-op when unset."""
+    proxy = (proxy or "").strip()
+    if not proxy:
+        return
+    # agy (Go) reads only the HTTP(S) pair; ALL_PROXY is set too so tools agy
+    # spawns (curl, git, pip) don't fall back to an inherited, different proxy.
+    for key in (
+        "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
+        "ALL_PROXY", "all_proxy",
+    ):
+        env[key] = proxy
+    # agy talks to its own local language server over loopback; that must never
+    # be routed through the proxy.
+    # Merge both casings: a parent may export NO_PROXY and no_proxy with
+    # different entries. Dedup case-insensitively, keeping first spelling.
+    raw = ",".join(filter(None, (env.get("NO_PROXY"), env.get("no_proxy"))))
+    entries: dict[str, str] = {}
+    for entry in (*raw.split(","), *_LOOPBACK_HOSTS):
+        entry = entry.strip()
+        if entry:
+            entries.setdefault(entry.casefold(), entry)
+    env["NO_PROXY"] = env["no_proxy"] = ",".join(entries.values())
+
+
 def build_child_env(isolated_home: Path | str) -> dict[str, str]:
     """Construct child environment isolating home and session storage on POSIX and Windows.
 
@@ -757,6 +787,7 @@ def build_child_env(isolated_home: Path | str) -> dict[str, str]:
         for var in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"):
             env.pop(var, None)
 
+    apply_proxy_env(env, os.getenv("ANTIGRAVITY_PROXY"))
     return env
 
 

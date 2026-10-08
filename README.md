@@ -169,6 +169,7 @@ Strict baseline: `PATH`, `LANG`, `LANGUAGE`, `LC_*`, `TZ`, `TERM`, `TMPDIR`/`TEM
 | `ANTIGRAVITY_CONFIG_DIR` | (none) | Override the config directory, bypassing keyring and token-file detection. |
 | `ANTIGRAVITY_DEBUG_PROMPT_DIR` | (none) | Directory to dump outgoing prompts sent to `agy` for offline diagnosis. |
 | `ANTIGRAVITY_WORKER_IDLE_SECONDS` | `900` | Terminate the persistent `agy` worker after this many seconds without a finished turn. The next turn starts a fresh worker with the full prompt. `0` or a negative value disables the bound. |
+| `ANTIGRAVITY_PROXY` | (none) | Proxy URL (e.g. `http://127.0.0.1:8080` or `socks5h://127.0.0.1:1080`) agy's subprocess should use. Sets `HTTP(S)_PROXY` and `ALL_PROXY` (both casings) and adds loopback to `NO_PROXY`. Unset means agy inherits the parent process's proxy environment unchanged. |
 
 ---
 
