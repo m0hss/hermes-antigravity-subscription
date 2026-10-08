@@ -639,21 +639,155 @@ class AntigravityPluginTests(unittest.TestCase):
         # Suffix override: model had -high but effort was set to low
         self.assertEqual(client._resolve_model_and_effort("gemini-3.8-flash-high", "low"), ("gemini-3.8-flash-low", "low"))
 
-        # Claude models: agy rejects --effort for them, so no effort is reported
-        # and the client must never append the flag (it would kill the worker).
-        # Issue #15.
-        self.assertEqual(client._resolve_model_and_effort("claude-sonnet-4-6", "high"), ("claude-sonnet-4-6", None))
-        self.assertEqual(client._resolve_model_and_effort("claude-opus-4-6-thinking", "medium"), ("claude-opus-4-6-thinking", None))
+        # Claude 5.5 is listed by agy as -low/-medium/-high and requires --effort.
+        self.assertEqual(client._resolve_model_and_effort("claude-sonnet-5-5", "low"), ("claude-sonnet-5-5-low", "low"))
+        self.assertEqual(client._resolve_model_and_effort("claude-sonnet-5-5", "medium"), ("claude-sonnet-5-5-medium", "medium"))
+        self.assertEqual(client._resolve_model_and_effort("claude-opus-5-5", "high"), ("claude-opus-5-5-high", "high"))
+        self.assertEqual(client._resolve_model_and_effort("claude-opus-5-5", "xhigh"), ("claude-opus-5-5-high", "high"))
+        self.assertEqual(client._resolve_model_and_effort("claude-opus-5-5-high", "low"), ("claude-opus-5-5-low", "low"))
+        self.assertEqual(client._resolve_model_and_effort("sonnet", "high"), ("claude-sonnet-5-5-high", "high"))
+        self.assertEqual(client._resolve_model_and_effort("opus", "medium"), ("claude-opus-5-5-medium", "medium"))
+
+        # gpt-oss-120b only exists at medium: every request maps to it.
+        for requested in ("low", "medium", "high", "max"):
+            self.assertEqual(client._resolve_model_and_effort("gpt-oss-120b", requested), ("gpt-oss-120b-medium", "medium"))
+        self.assertEqual(client._resolve_model_and_effort("gpt-oss-120b-medium", "low"), ("gpt-oss-120b-medium", "medium"))
+
+        # A model that neither agy nor the built-in table lists is selected by
+        # bare name, without --effort (agy rejects it for those). Issue #15.
+        with patch("models._catalog_cache", None), patch("models.load_catalog", return_value={}):
+            self.assertEqual(client._resolve_model_and_effort("claude-sonnet-4-6", "high"), ("claude-sonnet-4-6", None))
+            self.assertEqual(client._resolve_model_and_effort("claude-opus-4-6-thinking", "medium"), ("claude-opus-4-6-thinking", None))
 
     def test_profile_supported_reasoning_efforts(self):
         profile = get_provider_profile("antigravity-subscription-directsdk")
         self.assertEqual(profile.supported_reasoning_efforts("gemini-3.8-flash"), ("low", "medium", "high"))
         self.assertEqual(profile.supported_reasoning_efforts("gemini-3.1-pro"), ("low", "high"))
-        self.assertEqual(profile.supported_reasoning_efforts("gpt-oss-120b-medium"), ())
-        # agy rejects --effort for Claude; offering levels would break every turn.
-        # Issue #15.
-        self.assertEqual(profile.supported_reasoning_efforts("claude-sonnet-4-6"), ())
-        self.assertEqual(profile.supported_reasoning_efforts("claude-opus-4-6-thinking"), ())
+        self.assertEqual(profile.supported_reasoning_efforts("claude-sonnet-5-5"), ("low", "medium", "high"))
+        self.assertEqual(profile.supported_reasoning_efforts("claude-opus-5-5-high"), ("low", "medium", "high"))
+        self.assertEqual(profile.supported_reasoning_efforts("gpt-oss-120b-medium"), ("medium",))
+        # Aliases resolve to the model they stand for.
+        self.assertEqual(profile.supported_reasoning_efforts("pro"), ("low", "high"))
+        self.assertEqual(profile.supported_reasoning_efforts("sonnet"), ("low", "medium", "high"))
+        # Unknown bare-name models take no --effort; offering levels would
+        # break every turn. Issue #15.
+        with patch("models._catalog_cache", None):
+            self.assertEqual(profile.supported_reasoning_efforts("claude-sonnet-4-6"), ())
+            self.assertEqual(profile.supported_reasoning_efforts("claude-opus-4-6-thinking"), ())
+
+    AGY_MODELS_OUTPUT = (
+        "Fetching available models...\n"
+        "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
+        "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)\n"
+        "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n"
+        "gemini-3.1-pro-high\tGemini 3.1 Pro (High)\n"
+        "gemini-3.1-pro-low\tGemini 3.1 Pro (Low)\n"
+        "claude-opus-5-5-low\tClaude Opus 5.5 (Low)\n"
+        "claude-opus-5-5-medium\tClaude Opus 5.5 (Medium)\n"
+        "claude-opus-5-5-high\tClaude Opus 5.5 (High)\n"
+        "gpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n"
+        "claude-legacy\tClaude Legacy\n"
+    )
+
+    def test_parse_catalog_groups_efforts_per_model(self):
+        import models
+
+        catalog = models.parse_catalog(self.AGY_MODELS_OUTPUT)
+        self.assertEqual(
+            catalog,
+            {
+                "gemini-3.8-flash": ("low", "medium", "high"),
+                "gemini-3.1-pro": ("low", "high"),
+                "claude-opus-5-5": ("low", "medium", "high"),
+                "gpt-oss-120b": ("medium",),
+                "claude-legacy": (),
+            },
+        )
+        self.assertEqual(list(catalog)[0], "gemini-3.8-flash")
+
+    def test_fetch_models_lists_every_family_once(self):
+        import models
+
+        profile = get_provider_profile("antigravity-subscription-directsdk")
+        listed = SimpleNamespace(stdout=self.AGY_MODELS_OUTPUT)
+        with patch("models._catalog_cache", None), \
+                patch("process.resolve_agy_command", return_value="agy"), \
+                patch("models.subprocess.run", return_value=listed):
+            result = profile.fetch_models()
+        self.assertEqual(
+            result,
+            ["gemini-3.8-flash", "gemini-3.1-pro", "claude-opus-5-5", "gpt-oss-120b", "claude-legacy"],
+        )
+
+    def test_fetch_models_falls_back_when_agy_fails(self):
+        import models
+
+        profile = get_provider_profile("antigravity-subscription-directsdk")
+        with patch("models._catalog_cache", None), \
+                patch("process.resolve_agy_command", return_value="agy"), \
+                patch("models.subprocess.run", side_effect=FileNotFoundError("agy")):
+            self.assertEqual(profile.fetch_models(), list(models._FALLBACK_MODELS))
+
+    def test_live_catalog_overrides_builtin_efforts(self):
+        import models
+
+        live = {"gemini-3.1-pro": ("low", "medium", "high")}
+        with patch("models._catalog_cache", (time.monotonic() + 60, live)):
+            self.assertEqual(
+                models.resolve_model_and_effort("gemini-3.1-pro", "medium"),
+                ("gemini-3.1-pro-medium", "medium"),
+            )
+
+    def test_unknown_model_is_looked_up_once_in_the_catalog(self):
+        import models
+
+        live = {"claude-next-9": ("low", "high")}
+        with patch("models._catalog_cache", None), \
+                patch("models.load_catalog", return_value=live) as load:
+            self.assertEqual(models.model_efforts("claude-next-9"), ("low", "high"))
+            # load_catalog is mocked, so it leaves the cache empty: refresh=False
+            # finds neither a cache nor a built-in entry.
+            self.assertEqual(models.model_efforts("claude-next-9", refresh=False), None)
+            load.assert_called_once()
+
+    def test_failed_catalog_lookup_is_not_retried_immediately(self):
+        import models
+
+        with patch("models._catalog_cache", None), \
+                patch("process.resolve_agy_command", return_value="agy"), \
+                patch("models.subprocess.run", side_effect=FileNotFoundError("agy")) as run:
+            self.assertIsNone(models.model_efforts("mystery-model"))
+            self.assertIsNone(models.model_efforts("another-mystery"))
+        self.assertEqual(run.call_count, 1)
+
+    def test_concurrent_lookups_spawn_agy_once(self):
+        import threading
+        import models
+
+        def slow_run(*args, **kwargs):
+            time.sleep(0.2)
+            return SimpleNamespace(stdout="mystery-model-low\nmystery-model-high\n")
+
+        results = []
+        with patch("models._catalog_cache", None), \
+                patch("process.resolve_agy_command", return_value="agy"), \
+                patch("models.subprocess.run", side_effect=slow_run) as run:
+            threads = [
+                threading.Thread(target=lambda: results.append(models.model_efforts("mystery-model")))
+                for _ in range(4)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(results, [("low", "high")] * 4)
+
+    def test_aliases_point_at_known_models(self):
+        import models
+
+        for alias, target in models._MODEL_ALIASES.items():
+            self.assertIn(target, models._KNOWN_EFFORTS, alias)
 
     def test_fetch_models_clean_base_names(self):
         profile = get_provider_profile("antigravity-subscription-directsdk")

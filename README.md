@@ -31,9 +31,15 @@ This plugin lets Hermes use Gemini and Claude models through your existing Antig
 | `gemini-3.7-flash` | `-low`, `-medium`, `-high` | 1M tokens | 200k tokens | `low`, `medium`, `high` |
 | `gemini-3.6-flash` | `-low`, `-medium`, `-high` | 1M tokens | 200k tokens | `low`, `medium`, `high` |
 | `gemini-3.1-pro` | `-low`, `-high` | 2M tokens | 200k tokens | `low`, `high` |
+| `claude-opus-5-5` | `-low`, `-medium`, `-high` | Not measured | 200k tokens | `low`, `medium`, `high` |
+| `claude-sonnet-5-5` | `-low`, `-medium`, `-high` | Not measured | 200k tokens | `low`, `medium`, `high` |
+| `gpt-oss-120b` | `-medium` only | 128k tokens | 200k tokens | `medium` |
 | `claude-sonnet-4-6` | None | 200k tokens | 200k tokens | None (agy rejects `--effort`) |
 | `claude-opus-4-6-thinking` | None | 200k tokens | 200k tokens | None (agy rejects `--effort`) |
-| `gpt-oss-120b-medium` | None | 128k tokens | 200k tokens | None |
+
+The `claude-*-4-6` rows apply to older `agy` builds; `agy` 1.2.15 no longer lists them.
+
+**Efforts follow `agy models`.** The plugin groups the ids that `agy models` prints (`gemini-3.8-flash-low`, `-medium`, `-high`) into one model with the efforts agy accepts for it. A model that agy lists by bare name takes no `--effort`. A requested effort that the model lacks maps to the nearest supported one, the stronger on a tie (`medium` on `gemini-3.1-pro` becomes `high`). The result is cached for one hour; the table in `models.py` covers the models above when `agy models` fails. Hermes' own `xhigh` and `max` map to `high`.
 
 > **LLM Context vs Plugin Declared**: The LLM context column shows the model's native token window. The plugin declares 200,000 tokens to Hermes (configurable via `ANTIGRAVITY_CONTEXT_LENGTH`). This gap exists because `agy` runs an internal Go language server (`jetski/cortex`) that re-serializes the cumulative trajectory on each token via a gRPC channel with a 5-second drain deadline. Prompts exceeding 500 KB cause channel backpressure that trips the deadline and drops the stream. The 200k declared limit triggers Hermes auto-compression at 80% (160k tokens), keeping wire payloads within `agy` throughput limits.
 
@@ -47,9 +53,11 @@ This plugin lets Hermes use Gemini and Claude models through your existing Antig
 | `gemini-3.7-flash` | Follows | Tested with full toolset |
 | `gemini-3.6-flash` | Ignores | Goes native even with a single tool schema |
 | `gemini-3.1-pro` | Follows | Tested with full toolset |
+| `claude-opus-5-5` | Not tested | |
+| `claude-sonnet-5-5` | Not tested | |
 | `claude-opus-4-6-thinking` | Follows | Tested with full toolset |
 | `claude-sonnet-4-6` | Partial | Works with moderate toolsets (tested up to 10 tools); refuses or flips to native with large toolsets (~40 tools) |
-| `gpt-oss-120b-medium` | Follows | Tested with full toolset |
+| `gpt-oss-120b` | Follows | Tested with full toolset |
 
 Models that ignore the protocol attempt `agy`'s native `RunCommand`/`WriteToFile` steps. The plugin neutralizes these (stream watcher kills the process), but every tool-using turn fails. This is an upstream `agy` limitation: the persona prompt is embedded in the closed binary with no configuration surface to suppress it.
 

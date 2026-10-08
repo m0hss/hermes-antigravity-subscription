@@ -2,25 +2,33 @@
 
 from __future__ import annotations
 
+import logging
+import subprocess
+import threading
+import time
 from typing import Any
 
-_FALLBACK_MODELS = [
-    "gemini-3.8-flash",
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
-    "gemini-3.1-pro",
-    "claude-sonnet-4-6",
-    "claude-opus-4-6-thinking",
-    "gpt-oss-120b-medium",
-]
+logger = logging.getLogger(__name__)
 
-# agy rejects --effort for these model families:
-#   error: invalid model selection (--model "claude-sonnet-4-6" --effort "medium"):
-#          --effort is not supported for model "claude-sonnet-4-6"
-# The worker exits at startup. Hermes sees a BrokenPipeError, retries 3x, then
-# silently falls back to OpenRouter (real spend). Claude models must be selected
-# by name alone, never with --effort. (Issue #15)
-_NO_EFFORT_MODEL_PREFIXES = ("claude",)
+# Efforts that `agy --effort` accepts, per base model. A model that agy lists
+# as `<base>-low|medium|high` takes --effort; a model it lists by bare name
+# does not (agy 1.2.x rejects --effort for those, and rejects a missing
+# --effort for the others).
+#
+# `agy models` is the source of truth. This table only lets known models
+# resolve without spawning a process, and covers the case where `agy models`
+# fails. An empty tuple means "bare name, no --effort".
+_KNOWN_EFFORTS: dict[str, tuple[str, ...]] = {
+    "gemini-3.8-flash": ("low", "medium", "high"),
+    "gemini-3.7-flash": ("low", "medium", "high"),
+    "gemini-3.6-flash": ("low", "medium", "high"),
+    "gemini-3.1-pro": ("low", "high"),
+    "claude-opus-5-5": ("low", "medium", "high"),
+    "claude-sonnet-5-5": ("low", "medium", "high"),
+    "gpt-oss-120b": ("medium",),
+}
+
+_FALLBACK_MODELS = list(_KNOWN_EFFORTS)
 
 _MODEL_ALIASES = {
     "default": "gemini-3.8-flash",
@@ -30,11 +38,23 @@ _MODEL_ALIASES = {
     "pro": "gemini-3.1-pro",
     "gemini-pro": "gemini-3.1-pro",
     "gemini-3.1": "gemini-3.1-pro",
-    "sonnet": "claude-sonnet-4-6",
-    "claude-sonnet": "claude-sonnet-4-6",
-    "opus": "claude-opus-4-6-thinking",
-    "claude-opus": "claude-opus-4-6-thinking",
+    "sonnet": "claude-sonnet-5-5",
+    "claude-sonnet": "claude-sonnet-5-5",
+    "opus": "claude-opus-5-5",
+    "claude-opus": "claude-opus-5-5",
 }
+
+_EFFORT_SUFFIXES = (("-high", "high"), ("-medium", "medium"), ("-low", "low"))
+_EFFORT_RANK = {"low": 0, "medium": 1, "high": 2}
+
+# Substrings that mark a line of `agy models` as a model id (the command also
+# prints a "Fetching available models..." header).
+_MODEL_ID_MARKERS = ("gemini", "claude", "gpt", "model")
+
+_CATALOG_TTL_SECONDS = 3600.0
+_CATALOG_FAILURE_TTL_SECONDS = 60.0
+_catalog_lock = threading.Lock()
+_catalog_cache: tuple[float, dict[str, tuple[str, ...]]] | None = None
 
 
 def _normalize_effort(effort: str | None) -> str | None:
@@ -50,27 +70,139 @@ def _normalize_effort(effort: str | None) -> str | None:
     return "medium"
 
 
+def split_effort_suffix(model: str) -> tuple[str, str | None]:
+    """Split `gemini-3.8-flash-high` into (`gemini-3.8-flash`, `high`)."""
+    for suffix, effort in _EFFORT_SUFFIXES:
+        if model.endswith(suffix):
+            return model[: -len(suffix)], effort
+    return model, None
+
+
+def parse_catalog(text: str) -> dict[str, tuple[str, ...]]:
+    """Group `agy models` output as {base model: supported efforts}.
+
+    `gemini-3.8-flash-{low,medium,high}` becomes one `gemini-3.8-flash` entry
+    with three efforts; an id with no effort suffix maps to an empty tuple.
+    Insertion order follows the order agy printed the models in.
+    """
+    grouped: dict[str, list[str]] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or "fetching" in line.lower():
+            continue
+        model_id = line.split()[0]
+        if not any(marker in model_id.lower() for marker in _MODEL_ID_MARKERS):
+            continue
+        base, effort = split_effort_suffix(model_id)
+        efforts = grouped.setdefault(base, [])
+        if effort and effort not in efforts:
+            efforts.append(effort)
+    return {
+        base: tuple(sorted(efforts, key=_EFFORT_RANK.__getitem__))
+        for base, efforts in grouped.items()
+    }
+
+
+def load_catalog(
+    timeout: float = 15.0, *, only_if_stale: bool = False
+) -> dict[str, tuple[str, ...]]:
+    """Run `agy models`, cache the parsed result, and return it.
+
+    Returns an empty dict when agy is missing, slow, or prints nothing usable.
+    Failures are cached briefly so an absent agy does not cost a process
+    spawn per request. With `only_if_stale`, a thread that waited on the lock
+    reuses the result the previous holder just cached instead of spawning agy
+    again.
+    """
+    global _catalog_cache
+    try:
+        from .process import resolve_agy_command
+    except ImportError:
+        from process import resolve_agy_command
+
+    with _catalog_lock:
+        if only_if_stale:
+            fresh = _cached_catalog()
+            if fresh is not None:
+                return fresh
+        try:
+            res = subprocess.run(
+                [resolve_agy_command(), "models"],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            catalog = parse_catalog(res.stdout)
+        except Exception as exc:
+            logger.debug("Antigravity model catalog unavailable: %s", exc)
+            catalog = {}
+        ttl = _CATALOG_TTL_SECONDS if catalog else _CATALOG_FAILURE_TTL_SECONDS
+        _catalog_cache = (time.monotonic() + ttl, catalog)
+        return catalog
+
+
+def _cached_catalog() -> dict[str, tuple[str, ...]] | None:
+    cache = _catalog_cache
+    if cache is not None and time.monotonic() < cache[0]:
+        return cache[1]
+    return None
+
+
+def model_efforts(base_model: str, *, refresh: bool = True) -> tuple[str, ...] | None:
+    """Efforts agy accepts for `base_model`; () means bare name, None means unknown.
+
+    Order: a fresh `agy models` result, then the built-in table, then (when
+    `refresh` is true) a new `agy models` call. While a cached result is
+    fresh, a model it does not list is not looked up again until the cache
+    expires, so an unknown name costs no process spawn per request.
+    """
+    cached = _cached_catalog()
+    if cached is not None and base_model in cached:
+        return cached[base_model]
+    if base_model in _KNOWN_EFFORTS:
+        return _KNOWN_EFFORTS[base_model]
+    if refresh and cached is None:
+        return load_catalog(only_if_stale=True).get(base_model)
+    return None
+
+
+def _heuristic_efforts(base_model: str, has_suffix: bool) -> tuple[str, ...]:
+    """Efforts for a model that neither agy nor the built-in table lists."""
+    if base_model.startswith("gemini-") and "pro" in base_model:
+        return ("low", "high")
+    if base_model.startswith("gemini-") and "flash" in base_model:
+        return ("low", "medium", "high")
+    # A suffixed id is an effort variant; a bare unknown id takes no --effort.
+    return ("low", "medium", "high") if has_suffix else ()
+
+
+def _nearest_effort(requested: str, supported: tuple[str, ...]) -> str:
+    """Closest supported effort; on a tie the stronger one wins."""
+    target = _EFFORT_RANK[requested]
+    return min(
+        supported,
+        key=lambda e: (abs(_EFFORT_RANK[e] - target), -_EFFORT_RANK[e]),
+    )
+
+
 def resolve_model_and_effort(
     model: str | None,
     reasoning_effort: str | None = None,
 ) -> tuple[str, str | None]:
-    """Map user/hermes model request to concrete CLI model ID and effort level."""
+    """Map user/hermes model request to concrete CLI model ID and effort level.
+
+    Returns (model id, effort). The effort is None for models that agy selects
+    by bare name; the client then omits --effort.
+    """
     m = str(model or "gemini-3.8-flash").strip()
     m = _MODEL_ALIASES.get(m.lower(), m)
 
-    # Models that cannot take --effort at all: resolve to the bare model ID
-    # and report no effort, so client.py never appends the flag. (Issue #15)
-    if m.lower().startswith(_NO_EFFORT_MODEL_PREFIXES):
-        return m, None
-
-    # Check if the model already contains an explicit effort suffix
-    base_model = m
-    suffix_effort = None
-    for suffix, eff in (("-high", "high"), ("-medium", "medium"), ("-low", "low")):
-        if m.endswith(suffix):
-            suffix_effort = eff
-            base_model = m[:-len(suffix)]
-            break
+    base_model, suffix_effort = split_effort_suffix(m)
+    supported = model_efforts(base_model)
+    if supported is None:
+        supported = _heuristic_efforts(base_model, suffix_effort is not None)
+    if not supported:
+        return base_model, None
 
     # Resolve effort: explicit argument > model suffix > config setting > default
     effort = _normalize_effort(reasoning_effort)
@@ -86,17 +218,5 @@ def resolve_model_and_effort(
     if not effort:
         effort = "medium"
 
-    # Map base_model + effort to concrete agy model ID
-    if base_model == "gemini-3.1-pro":
-        # gemini-3.1-pro only has -low and -high in agy
-        concrete_effort = "low" if effort == "low" else "high"
-        return f"{base_model}-{concrete_effort}", concrete_effort
-    elif base_model.startswith("gemini-") and "flash" in base_model:
-        concrete_effort = effort if effort in ("low", "medium", "high") else "medium"
-        return f"{base_model}-{concrete_effort}", concrete_effort
-    elif suffix_effort and effort != suffix_effort:
-        # Suffix was in model ID but user requested different reasoning effort
-        concrete_effort = effort if effort in ("low", "medium", "high") else "medium"
-        return f"{base_model}-{concrete_effort}", concrete_effort
-    else:
-        return m, effort
+    concrete_effort = _nearest_effort(effort, supported)
+    return f"{base_model}-{concrete_effort}", concrete_effort

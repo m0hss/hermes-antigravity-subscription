@@ -5,24 +5,33 @@ from __future__ import annotations
 import logging
 import os
 import re
-import subprocess
 from typing import Any
 
 from providers import register_provider
 from providers.base import ProviderProfile
 
+try:
+    from .models import (
+        _FALLBACK_MODELS,
+        _MODEL_ALIASES,
+        _heuristic_efforts,
+        load_catalog,
+        model_efforts,
+        split_effort_suffix,
+    )
+except ImportError:
+    # Loaded outside a package (e.g. a flat source tree under test):
+    # the absolute name is the same module.
+    from models import (
+        _FALLBACK_MODELS,
+        _MODEL_ALIASES,
+        _heuristic_efforts,
+        load_catalog,
+        model_efforts,
+        split_effort_suffix,
+    )
+
 logger = logging.getLogger(__name__)
-
-_FALLBACK_MODELS = (
-    "gemini-3.8-flash",
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
-    "gemini-3.1-pro",
-    "claude-sonnet-4-6",
-    "claude-opus-4-6-thinking",
-    "gpt-oss-120b-medium",
-)
-
 
 class AntigravitySubscriptionDirectSDKProfile(ProviderProfile):
     """Google Antigravity Subscription DirectSDK provider profile."""
@@ -37,24 +46,19 @@ class AntigravitySubscriptionDirectSDKProfile(ProviderProfile):
         self, model: str | None
     ) -> tuple[str, ...] | None:
         """Declared reasoning-effort vocabulary for models on this provider.
-        
+
         Enables Hermes /model picker and /reasoning commands to offer appropriate
-        thinking effort options (low, medium, high) for reasoning-capable models.
+        thinking effort options for reasoning-capable models. The levels come from
+        `agy models`, so they follow what agy accepts per model: Gemini Flash and
+        Claude take low/medium/high, Gemini Pro low/high, gpt-oss medium only.
         """
-        m = (model or "").lower()
-        if "gemini-3.1-pro" in m:
-            return ("low", "high")
-        if "gemini" in m or "flash" in m or "pro" in m:
-            return ("low", "medium", "high")
-        if "claude" in m:
-            # agy rejects --effort for Claude models. Offering effort levels
-            # here makes Hermes send the flag; the worker dies with a
-            # BrokenPipeError and Hermes silently falls back to OpenRouter.
-            # (Issue #15)
-            return ()
-        if "gpt" in m:
-            return ()
-        return ("low", "medium", "high")
+        name = (model or "").strip()
+        base, suffix_effort = split_effort_suffix(_MODEL_ALIASES.get(name.lower(), name))
+        # No process spawn here: use the cached catalog and the built-in table.
+        efforts = model_efforts(base, refresh=False)
+        if efforts is None:
+            efforts = _heuristic_efforts(base, suffix_effort is not None)
+        return efforts
 
     def build_api_kwargs_extras(
         self,
@@ -83,53 +87,15 @@ class AntigravitySubscriptionDirectSDKProfile(ProviderProfile):
         timeout: float = 15.0,
     ) -> list[str] | None:
         """Query `agy models` and normalize to clean, deduplicated base models.
-        
+
         Separates model families from thinking efforts (e.g. `gemini-3.8-flash-{low,medium,high}`
-        becomes `gemini-3.8-flash`), allowing Hermes' native reasoning effort picker to handle
-        the thinking depth cleanly.
+        or `claude-opus-5-5-{low,medium,high}` becomes one entry), allowing Hermes' native
+        reasoning effort picker to handle the thinking depth cleanly. The result also warms
+        the effort table that `resolve_model_and_effort` reads.
         """
-        try:
-            from .client import resolve_agy_command
-        except ImportError:
-            # Loaded outside a package (e.g. a flat source tree under test):
-            # the absolute name is the same module.
-            from client import resolve_agy_command
-
-        cmd = resolve_agy_command()
-        try:
-            res = subprocess.run(
-                [cmd, "models"],
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-            raw_models: list[str] = []
-            for raw_line in res.stdout.strip().splitlines():
-                line = raw_line.strip()
-                if not line or "fetching" in line.lower():
-                    continue
-                parts = line.split()
-                if parts:
-                    model_id = parts[0]
-                    if any(c in model_id.lower() for c in ("gemini", "claude", "gpt", "model")):
-                        raw_models.append(model_id)
-
-            if raw_models:
-                clean_models: list[str] = []
-                seen: set[str] = set()
-                for m in raw_models:
-                    base = m
-                    for suffix in ("-high", "-medium", "-low"):
-                        if m.endswith(suffix) and (m.startswith("gemini-") or "flash" in m or "pro" in m):
-                            base = m[:-len(suffix)]
-                            break
-                    if base not in seen:
-                        seen.add(base)
-                        clean_models.append(base)
-                return clean_models
-        except Exception as exc:
-            logger.debug("Antigravity fetch_models failed: %s", exc)
-
+        catalog = load_catalog(timeout=timeout)
+        if catalog:
+            return list(catalog)
         return list(_FALLBACK_MODELS)
 
     def get_model_context_length(self, model: str) -> int | None:
