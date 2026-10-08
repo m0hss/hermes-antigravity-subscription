@@ -21,6 +21,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+# prompt.py imports agent.acp_openai_bridge lazily during the first turn, while Hermes
+# starts the title-generation thread in parallel. Two threads first-importing
+# openai.types.chat race and the loser sees a partially initialized module, so the
+# session title is lost. Importing the bridge here runs that import on the loading thread.
+import agent.acp_openai_bridge  # noqa: E402,F401
+
 try:
     from .models import (
         _FALLBACK_MODELS,
