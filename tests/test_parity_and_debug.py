@@ -81,6 +81,28 @@ class TestLatestUserRequestParity(unittest.TestCase):
         expected_section = _latest_user_request_section(user_text)
         self.assertTrue(full_prompt.endswith(expected_section))
 
+    def test_full_prompt_sandwich_anchoring_in_multi_turn_history(self):
+        user_text = "Write a detailed explanation of TCP congestion control"
+        messages = [
+            {"role": "user", "content": "Write a python script"},
+            {"role": "assistant", "content": "Done with script."},
+            {"role": "user", "content": user_text},
+        ]
+        full_prompt = _format_messages_as_prompt(messages)
+        # Sandwich anchor before transcript
+        self.assertIn("### ACTIVE OBJECTIVE:\n", full_prompt)
+        self.assertIn(f"The user has submitted a new request:\n\"{user_text}\"", full_prompt)
+        # Conversation transcript exists
+        self.assertIn("Conversation transcript:\n", full_prompt)
+        # LATEST USER REQUEST at the end
+        expected_section = _latest_user_request_section(user_text)
+        self.assertTrue(full_prompt.endswith(expected_section))
+        # Active objective appears before Conversation transcript
+        active_idx = full_prompt.index("### ACTIVE OBJECTIVE:\n")
+        transcript_idx = full_prompt.index("Conversation transcript:\n")
+        latest_idx = full_prompt.index("### LATEST USER REQUEST TO ANSWER:\n")
+        self.assertTrue(active_idx < transcript_idx < latest_idx)
+
     def test_delta_prompt_user_produces_identical_section(self):
         user_text = "Analyze this project"
         delta_messages = [{"role": "user", "content": user_text}]

@@ -32,6 +32,7 @@ _PROMPT_PREAMBLE = (
     "- NEVER simulate or hallucinate Tool Results (e.g. 'Tool Result (...):'). Hermes Agent executes tools externally and will supply real results in subsequent turns.",
     "- After emitting tool calls, STOP generating immediately. Do NOT generate results, execution output, or commentary after tool calls.",
     "- If no tool is needed, respond naturally with standard text.",
+    "- When the user's latest message introduces a new question or task, do NOT continue prior completed tasks or tool loops. Address the user's latest request directly.",
 )
 
 _TOOL_CALL_PREFIXES = tuple(
@@ -174,6 +175,16 @@ def _format_messages_as_prompt(
         label = _ROLE_LABELS.get(role, "Context")
         if rendered_content:
             transcript.append(f"{label}:\n{rendered_content}")
+
+    if last_role == "user" and last_msg is not None and len(history_messages) > 1:
+        user_text = _render_message_content(last_msg.get("content"))
+        sections.append(
+            "### ACTIVE OBJECTIVE:\n"
+            f"The user has submitted a new request:\n\"{user_text}\"\n\n"
+            "CRITICAL: The conversation transcript below is historical background. "
+            "Do NOT silently continue prior tool execution loops or earlier coding tasks unless explicitly requested by the ACTIVE OBJECTIVE. "
+            "Focus your attention on answering the new request."
+        )
 
     if transcript:
         sections.append("Conversation transcript:\n\n" + "\n\n".join(transcript))
