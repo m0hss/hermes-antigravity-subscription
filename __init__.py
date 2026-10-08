@@ -177,7 +177,6 @@ def _classify_antigravity_error(
             "stalled for 5s",
             "empty result (status='success')",
             "empty result (status=\"success\")",
-            "context canceled",
             "max_trajectory_tokens",
             "max trajectory tokens",
         )

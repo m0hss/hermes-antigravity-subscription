@@ -132,7 +132,8 @@ class TestLatestUserRequestParity(unittest.TestCase):
         self.assertNotIn("### LATEST USER REQUEST TO ANSWER", delta_prompt)
         self.assertNotIn(EXPECTED_INSTRUCTION_SUBSTRING, delta_prompt)
         self.assertIn("Tool Result (call_abc):\nTool output 123", delta_prompt)
-        self.assertTrue(delta_prompt.endswith("Continue the conversation from the latest tool result."))
+        self.assertIn("Continue the conversation from the latest tool result.", delta_prompt)
+        self.assertIn("REMINDER: You are in HEADLESS INFERENCE MODE.", delta_prompt)
 
     def test_delta_prompt_other_role_unchanged(self):
         other_messages = [

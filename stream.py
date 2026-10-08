@@ -788,7 +788,7 @@ class AntigravityStream(Iterator[Any]):
                 # produced nothing is the empty-result raise's job below,
                 # not this exit-code one. A real nonzero exit keeps the
                 # quota/exit-code raise's priority over the generic one.
-                if not has_tool_calls and not has_content and returncode not in (None, 0):
+                if not neutralized_tool_step and not has_tool_calls and not has_content and returncode not in (None, 0):
                     quota_err = _check_early_quota_error(gemini_dir, min_mtime=start_time)
                     if quota_err:
                         raise RuntimeError(f"Antigravity model error: {quota_err}")
@@ -845,7 +845,7 @@ class AntigravityStream(Iterator[Any]):
                     raise RuntimeError(f"Antigravity model error: {error_msg}")
 
                 worker_exit = self.proc.poll()
-                if not has_tool_calls and not has_content and worker_exit not in (None, 0):
+                if not neutralized_tool_step and not has_tool_calls and not has_content and worker_exit not in (None, 0):
                     quota_err = _check_early_quota_error(gemini_dir, min_mtime=start_time)
                     if quota_err:
                         raise RuntimeError(f"Antigravity model error: {quota_err}")

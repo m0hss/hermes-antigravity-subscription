@@ -859,9 +859,13 @@ class AntigravityPluginTests(unittest.TestCase):
         verdict2 = hook(RuntimeError("Antigravity execution failed: empty result (status='SUCCESS')"))
         self.assertEqual(verdict2, {"reason": "context_overflow", "retryable": True, "should_compress": True})
 
-        # Test context canceled
+        # Test Go stream cancellation / context canceled is NOT context_overflow
         verdict3 = hook(RuntimeError("stream input cancelled: context canceled"))
-        self.assertEqual(verdict3, {"reason": "context_overflow", "retryable": True, "should_compress": True})
+        self.assertIsNone(verdict3)
+
+        # Test max trajectory tokens
+        verdict_traj = hook(RuntimeError("max_trajectory_tokens exceeded"))
+        self.assertEqual(verdict_traj, {"reason": "context_overflow", "retryable": True, "should_compress": True})
 
         # Test AI credits balance exhaustion (billing)
         verdict_billing = hook(RuntimeError("Antigravity execution failed: Your AI credits balance is too low to continue."))
@@ -923,6 +927,15 @@ class AntigravityPluginTests(unittest.TestCase):
         self.assertEqual(classified_auth.reason, FailoverReason.auth_permanent)
         self.assertFalse(classified_auth.retryable)
         self.assertFalse(classified_auth.should_fallback)
+
+        # Test headless unprompted tool denial and context cancellation does NOT classify as context_overflow
+        err_headless = RuntimeError(
+            "Antigravity execution failed: jetski: no output produced — a tool required the 'command' permission "
+            "that headless mode cannot prompt for, so it was auto-denied.\nerror: stream input cancelled: context canceled"
+        )
+        classified_headless = classify_api_error(err_headless, provider="antigravity-subscription-directsdk")
+        self.assertNotEqual(classified_headless.reason, FailoverReason.context_overflow)
+        self.assertFalse(classified_headless.should_compress)
 
     def test_security_default_args_omit_dangerous_permissions(self):
         # TemporaryDirectory (not /tmp): on Windows "/tmp" resolves to a

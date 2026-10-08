@@ -265,7 +265,12 @@ def _format_delta_prompt(new_messages: Sequence[dict[str, Any]]) -> str:
             parts.append(f"{label}:\n{rendered_content}")
 
     if last_role == "tool":
-        parts.append("Continue the conversation from the latest tool result.")
+        parts.append(
+            "Continue the conversation from the latest tool result. "
+            "REMINDER: You are in HEADLESS INFERENCE MODE. Native tools are disabled. "
+            "If you need to call a tool, emit ONLY <tool_call>{...}</tool_call> blocks in your text output. "
+            "Do NOT invoke native tools directly."
+        )
     elif last_role == "user":
         user_text = _render_message_content(last_msg.get("content"))
         parts.append(_latest_user_request_section(user_text))
